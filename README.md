@@ -1,292 +1,349 @@
-# Learn OpenClaw - 从源码学习 AI Agent
+# Learn OpenClaw - Build AI Agents from Scratch
 
-> **免责声明**: 这是一个独立的教育项目，用于学习 AI Agent 的架构设计。
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-blue.svg)](https://www.typescriptlang.org/)
+[![Node.js](https://img.shields.io/badge/Node.js-18+-green.svg)](https://nodejs.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
-**通过构建极简版本，理解现代 AI Agent 的工作原理。**
+> **Disclaimer**: This is an independent educational project for learning AI Agent architecture. Not affiliated with any commercial product.
 
----
+**The most comprehensive AI Agent tutorial: 10 progressive versions, from 150 lines to production-ready.**
 
-## 为什么创建这个项目？
-
-现代 AI Agent（如 Claude Code、OpenClaw）功能复杂，直接阅读数万行源码是困难的。
-
-本项目采用渐进式教学方法，从最简单的 Agent 开始，逐步增加功能：
-
-| 版本 | 核心概念 | 行数 | 新增能力 |
-|------|---------|------|---------|
-| V0 | Bash 即一切 | ~150 | 核心 Agent Loop |
-| V1 | 专用工具 | ~287 | read/write/edit/grep |
-| V2 | 本地记忆 | ~457 | Jaccard 相似度搜索 |
-| V3 | 任务规划 | ~527 | TodoManager |
-| V4 | 子代理 | ~570 | 进程递归隔离 |
-| V5 | 技能系统 | ~554 | SkillLoader |
-| V6 | 身份系统 | ~930 | 多人格切换 |
-| V7 | 分层记忆 | ~1176 | 日记 + 长期记忆 |
-| V8 | 心跳系统 | ~1369 | 主动检查机制 |
-| V9 | 会话管理 | ~1516 | 多会话隔离 |
+[中文文档](./README_zh.md)
 
 ---
 
-## 学习路径
+## Why This Repository?
+
+Modern AI Agents (Claude Code, Cursor, etc.) are complex systems with tens of thousands of lines of code. Reading them directly is overwhelming.
+
+**This project takes a different approach**: Start with the simplest possible agent (150 lines), then progressively add one capability at a time until you have a production-grade system.
+
+```
+V0 (150 lines) → V9 (1500+ lines)
+   │
+   └── Each version adds exactly ONE new concept
+```
+
+---
+
+## The Evolution
+
+| Version | Core Concept | Lines | What You'll Learn |
+|---------|-------------|-------|-------------------|
+| **V0** | Bash is All You Need | ~150 | The Agent Loop - the foundation of everything |
+| **V1** | Specialized Tools | ~287 | Why dedicated tools beat generic bash |
+| **V2** | Local Memory | ~457 | Vector search without external databases |
+| **V3** | Task Planning | ~527 | Making AI behavior predictable with TodoManager |
+| **V4** | Subagents | ~570 | Context isolation through process recursion |
+| **V5** | Skills System | ~554 | Domain expertise without retraining |
+| **V6** | Identity System | ~930 | Multi-persona switching and personality |
+| **V7** | Layered Memory | ~1176 | Time-aware memory: daily logs + long-term |
+| **V8** | Heartbeat System | ~1369 | Proactive behavior and scheduled tasks |
+| **V9** | Session Management | ~1516 | Multi-task isolation and context switching |
+
+---
+
+## Learning Path
 
 ```
 Start Here
     │
     ▼
 [V0: Bash Agent] ────────► "One tool is enough"
-    │                       单一 bash 工具，核心循环
+    │                       The core loop that powers ALL agents
     ▼
-[V1: Basic Tools] ───────► "专用工具比通用 bash 更安全"
-    │                       +read/write/edit/grep, safePath
+[V1: Basic Tools] ───────► "Specialized > Generic"
+    │                       +read/write/edit/grep with safePath
     ▼
-[V2: Memory] ────────────► "Agent 需要记忆，但不需要外部数据库"
-    │                       +LocalMemory, Jaccard 相似度
+[V2: Memory] ────────────► "No external DB needed"
+    │                       +LocalMemory with Jaccard similarity
     ▼
-[V3: TodoManager] ───────► "Make Plans Visible"
-    │                       +TodoWrite, 任务追踪
+[V3: TodoManager] ───────► "Make plans visible"
+    │                       +TodoWrite for explicit planning
     ▼
-[V4: Subagent] ──────────► "Agent 需要协作，但不需要复杂编排"
-    │                       +subagent 进程递归
+[V4: Subagent] ──────────► "Divide and conquer"
+    │                       +Process recursion for isolation
     ▼
-[V5: Skill] ─────────────► "Agent 需要专业知识，但不需要重新训练"
-    │                       +SkillLoader, YAML frontmatter
+[V5: Skill] ─────────────► "Expertise without retraining"
+    │                       +SkillLoader with YAML frontmatter
     ▼
-[V6: Identity] ──────────► "Agent 需要身份，但不需要硬编码"
-    │                       +IdentitySystem, 多人格切换
+[V6: Identity] ──────────► "Personality is configuration"
+    │                       +Multi-persona switching
     ▼
-[V7: LayeredMemory] ─────► "Agent 需要时间感知"
-    │                       +日记系统, 长期记忆
+[V7: LayeredMemory] ─────► "Time-aware agents"
+    │                       +Daily logs + long-term memory
     ▼
-[V8: Heartbeat] ─────────► "Agent 需要主动性"
-    │                       +心跳检查, 主动提醒
+[V8: Heartbeat] ─────────► "Proactive, not reactive"
+    │                       +Scheduled checks and reminders
     ▼
-[V9: Session] ───────────► "Agent 需要多任务隔离"
-                            +SessionManager, main/isolated
+[V9: Session] ───────────► "Multi-task isolation"
+                            +SessionManager for context switching
 ```
 
 ---
 
-## 核心模式
+## The Core Pattern
 
-所有 Agent 都遵循这个循环：
+**Every AI agent is just this loop:**
 
 ```typescript
 while (true) {
     const response = await model(messages, tools);
-    if (response.stop_reason !== "tool_use") return response.text;
+    if (response.stop_reason !== "tool_use") {
+        return response.text;
+    }
     const results = execute(response.tool_calls);
     messages.push(results);
 }
 ```
 
+That's it. The model calls tools until done. **Everything else is refinement.**
+
 ---
 
-## 快速开始
+## Quick Start
 
 ```bash
-# 进入项目目录
+# Clone the repository
+git clone https://github.com/Shiyao-Huang/learn-openclaw
 cd learn-openclaw
 
-# 安装依赖
+# Install dependencies
 npm install
 
-# 配置 API key
+# Configure API key
 cp .env.example .env
-# 编辑 .env 填入 ANTHROPIC_API_KEY
+# Edit .env with your ANTHROPIC_API_KEY
 
-# 运行各版本
-npx tsx v0-agent.ts    # 最简 Agent
-npx tsx v1-agent.ts    # 基础工具
-npx tsx v2-agent.ts    # 本地记忆
-npx tsx v3-agent.ts    # 任务规划
-npx tsx v4-agent.ts    # 子代理
-npx tsx v5-agent.ts    # 技能系统
-npx tsx v6-agent.ts    # 身份系统
-npx tsx v7-agent.ts    # 分层记忆
-npx tsx v8-agent.ts    # 心跳系统
-npx tsx v9-agent.ts    # 会话管理
+# Run any version (start with v0!)
+npx tsx v0-agent.ts    # Minimal agent
+npx tsx v1-agent.ts    # Basic tools
+npx tsx v2-agent.ts    # Local memory
+npx tsx v3-agent.ts    # Task planning
+npx tsx v4-agent.ts    # Subagents
+npx tsx v5-agent.ts    # Skills system
+npx tsx v6-agent.ts    # Identity system
+npx tsx v7-agent.ts    # Layered memory
+npx tsx v8-agent.ts    # Heartbeat system
+npx tsx v9-agent.ts    # Session management
 ```
 
 ---
 
-## 各版本详解
+## Key Insights by Version
 
-### V0: Bash 即一切 (~150行)
+### V0: Bash is All You Need (~150 lines)
 
-**核心哲学**: "One tool is enough"
+> "One tool is enough"
 
-只有一个 `bash` 工具，但已经是完整的 Agent：
-- 可以读写文件 (`cat`, `echo >`)
-- 可以搜索代码 (`grep`, `find`)
-- 可以执行任意命令
+A single `bash` tool creates a complete agent. It can read files (`cat`), write files (`echo >`), search code (`grep`), and execute anything.
 
-```typescript
-const TOOLS = [{ name: "bash", ... }];
-```
+**Key insight**: The model IS the agent. Code just provides tools.
 
-### V1: 基础工具系统 (~287行)
+### V1: Specialized Tools (~287 lines)
 
-**核心哲学**: "专用工具比通用 bash 更安全"
+> "Dedicated tools are safer than generic bash"
 
-新增 4 个专用工具：
-- `read_file`: 安全读取，带路径检查
-- `write_file`: 安全写入，自动创建目录
-- `edit_file`: 精确编辑（查找替换）
-- `grep`: 搜索文件内容
+Replace dangerous bash with safe, purpose-built tools:
+- `read_file`: Path validation prevents escapes
+- `write_file`: Auto-creates directories
+- `edit_file`: Precise find-and-replace
+- `grep`: Content search
 
-关键函数 `safePath()` 防止路径逃逸。
+**Key insight**: Constraints enable complexity.
 
-### V2: 本地向量记忆 (~457行)
+### V2: Local Memory (~457 lines)
 
-**核心哲学**: "Agent 需要记忆，但不需要外部向量数据库"
+> "No external vector database needed"
 
-`LocalMemory` 类实现：
-- **Jaccard 相似度**: 对中文友好的简单算法
-- **2-gram 分词**: 中文字符两两组合
-- **自动索引**: 追加内容时自动建立索引
+`LocalMemory` implements:
+- **Jaccard similarity**: Simple, works great for CJK languages
+- **2-gram tokenization**: Chinese-friendly character pairs
+- **Auto-indexing**: Build index on append
 
-工具：`memory_search`, `memory_get`, `memory_append`, `memory_ingest`
+**Key insight**: Simple algorithms often beat complex ones.
 
-### V3: 任务规划系统 (~527行)
+### V3: Task Planning (~527 lines)
 
-**核心哲学**: "Make Plans Visible"
+> "Make plans visible"
 
-`TodoManager` 实现简单的任务追踪：
-- 字段：`content`, `status`, `activeForm`
-- 约束：最多 20 个任务，只能 1 个 `in_progress`
-- 单一工具：`TodoWrite`（替换式更新）
+`TodoManager` enforces structure:
+- Max 20 tasks
+- Only 1 `in_progress` at a time
+- Single `TodoWrite` tool (replace, not patch)
 
-### V4: 子代理协调 (~570行)
+**Key insight**: Explicit planning makes AI predictable.
 
-**核心哲学**: "Agent 需要协作，但不需要复杂的编排系统"
+### V4: Subagents (~570 lines)
 
-通过进程递归实现上下文隔离：
+> "Context isolation through process recursion"
+
 ```typescript
 const cmd = `npx tsx "${scriptPath}" "${escapedPrompt}"`;
 execSync(cmd, { env: { OPENCLAW_SUBAGENT: "1" } });
 ```
 
-工具：`subagent`
+**Key insight**: Clean context = better results.
 
-### V5: Skill 系统 (~554行)
+### V5: Skills System (~554 lines)
 
-**核心哲学**: "Agent 需要专业知识，但不需要重新训练"
+> "Domain expertise without retraining"
 
-`SkillLoader` 实现：
-- 解析 YAML frontmatter (`---\nname: ...\n---`)
-- 按需加载，不污染系统提示
-- Skill 内容作为 `tool_result` 注入
+`SkillLoader` parses YAML frontmatter and injects knowledge on-demand.
 
-工具：`Skill`
+**Key insight**: Knowledge injection beats fine-tuning.
 
-### V6: 身份系统 (~930行)
+### V6: Identity System (~930 lines)
 
-**核心哲学**: "Agent 需要身份，但不需要硬编码"
+> "Personality is just configuration"
 
-`IdentitySystem` 管理：
-- `AGENTS.md`: 可用人格列表
-- `SOUL.md`: 核心价值观
-- `IDENTITY.md`: 当前激活身份
-- `USER.md`: 用户偏好
+Files that define an agent:
+- `AGENTS.md`: Available personas
+- `SOUL.md`: Core values
+- `IDENTITY.md`: Active identity
+- `USER.md`: User preferences
 
-工具：`identity_switch`, `identity_get`, `identity_list`, `identity_update_user`
+**Key insight**: Identity is data, not code.
 
-### V7: 分层记忆 (~1176行)
+### V7: Layered Memory (~1176 lines)
 
-**核心哲学**: "Agent 需要时间感知"
+> "Agents need time awareness"
 
-`LayeredMemory` 实现：
-- **日记系统**: `memory/YYYY-MM-DD.md`
-- **长期记忆**: `MEMORY.md`
-- **时间上下文**: 自动注入日期信息
+- **Daily logs**: `memory/YYYY-MM-DD.md`
+- **Long-term memory**: `MEMORY.md`
+- **Time context**: Auto-injected date info
 
-工具：`daily_append`, `daily_get`, `longterm_append`, `longterm_search`, `time_context`
+**Key insight**: Memory needs temporal structure.
 
-### V8: 心跳系统 (~1369行)
+### V8: Heartbeat System (~1369 lines)
 
-**核心哲学**: "Agent 需要主动性"
+> "Proactive, not just reactive"
 
-`HeartbeatSystem` 实现：
-- `HEARTBEAT.md`: 待办事项和提醒
-- 主动检查机制
-- 定时任务追踪
+`HeartbeatSystem` enables:
+- Scheduled reminders
+- Proactive checks
+- Task tracking
 
-工具：`heartbeat_add`, `heartbeat_check`, `heartbeat_complete`, `heartbeat_list`
+**Key insight**: Great agents anticipate needs.
 
-### V9: 会话管理 (~1516行)
+### V9: Session Management (~1516 lines)
 
-**核心哲学**: "Agent 需要多任务隔离"
+> "Multi-task isolation"
 
-`SessionManager` 实现：
-- **main**: 主会话，持久化
-- **isolated**: 隔离会话，独立上下文
-- 会话切换和状态保存
+- **main**: Persistent primary session
+- **isolated**: Independent context per task
+- Session switching and state preservation
 
-工具：`session_create`, `session_switch`, `session_list`, `session_save`
+**Key insight**: Isolation prevents context pollution.
 
 ---
 
-## 文件结构
+## File Structure
 
 ```
 learn-openclaw/
-├── v0-agent.ts          # ~150行: 1 tool, 核心循环
-├── v1-agent.ts          # ~287行: 5 tools, 基础工具
-├── v2-agent.ts          # ~457行: 本地记忆系统
-├── v3-agent.ts          # ~527行: 任务规划
-├── v4-agent.ts          # ~570行: 子代理
-├── v5-agent.ts          # ~554行: Skill 系统
-├── v6-agent.ts          # ~930行: 身份系统
-├── v7-agent.ts          # ~1176行: 分层记忆
-├── v8-agent.ts          # ~1369行: 心跳系统
-├── v9-agent.ts          # ~1516行: 会话管理
-├── skills/              # 示例 Skills
-│   └── example/
-│       └── SKILL.md
-├── docs/                # 教学文档
-│   ├── v0-bash即一切.md
-│   ├── v1-专用工具.md
+├── v0-agent.ts          # ~150 lines: 1 tool, core loop
+├── v1-agent.ts          # ~287 lines: 5 tools, safe operations
+├── v2-agent.ts          # ~457 lines: local memory system
+├── v3-agent.ts          # ~527 lines: task planning
+├── v4-agent.ts          # ~570 lines: subagent coordination
+├── v5-agent.ts          # ~554 lines: skill system
+├── v6-agent.ts          # ~930 lines: identity system
+├── v7-agent.ts          # ~1176 lines: layered memory
+├── v8-agent.ts          # ~1369 lines: heartbeat system
+├── v9-agent.ts          # ~1516 lines: session management
+├── skills/              # Example skills
+├── docs/                # Technical documentation
+│   ├── v0-Bash即一切.md
+│   ├── v1-模型即代理.md
 │   └── ...
-├── .env.example         # 环境变量示例
-├── package.json         # 依赖配置
-└── tsconfig.json        # TypeScript 配置
+├── .ID.sample/          # Sample identity files
+├── .env.example         # Environment template
+└── package.json         # Dependencies
 ```
 
 ---
 
-## 演进依赖关系
+## Evolution Dependencies
 
 ```
-V0 (核心循环)
- └── V1 (基础工具)
-      └── V2 (本地记忆)
-           └── V3 (任务规划)
-                └── V4 (子代理)
-                     └── V5 (Skill)
-                          └── V6 (身份)
-                               └── V7 (分层记忆)
-                                    └── V8 (心跳)
-                                         └── V9 (会话)
+V0 (Core Loop)
+ └── V1 (Basic Tools)
+      └── V2 (Local Memory)
+           └── V3 (Task Planning)
+                └── V4 (Subagents)
+                     └── V5 (Skills)
+                          └── V6 (Identity)
+                               └── V7 (Layered Memory)
+                                    └── V8 (Heartbeat)
+                                         └── V9 (Sessions)
 ```
 
-每个版本都是前一版本的超集，严格向前依赖。
+Each version is a strict superset of the previous. No version skipping.
 
 ---
 
-## 核心洞察
+## Philosophy
 
-> **模型占 80%，代码占 20%。**
+> **The model is 80%. Code is 20%.**
 
-现代 Agent 之所以工作，不是因为巧妙的工程，而是因为模型被训练成 Agent。我们的工作是给它工具，然后不要挡路。
-
----
-
-## 参考资源
-
-- **learn-claude-code**: https://github.com/shareAI-lab/learn-claude-code
-- **Agent Skills Spec**: https://agentskills.io/specification
-- **Anthropic SDK**: https://github.com/anthropics/anthropic-sdk-python
+Modern agents work not because of clever engineering, but because the model is trained to BE an agent. Our job is to give it tools and stay out of the way.
 
 ---
 
-**Model as Agent. That's the whole secret.**
+## Documentation
+
+### Technical Docs (docs/)
+
+| Doc | Topic |
+|-----|-------|
+| [v0-Bash即一切](./docs/v0-Bash即一切.md) | The core agent loop |
+| [v1-模型即代理](./docs/v1-模型即代理.md) | Model as agent |
+| [v2-向量记忆系统](./docs/v2-向量记忆系统.md) | Local vector memory |
+| [v3-任务规划系统](./docs/v3-任务规划系统.md) | Task planning |
+| [v4-子代理协调](./docs/v4-子代理协调.md) | Subagent coordination |
+| [v5-Skill系统](./docs/v5-Skill系统.md) | Skills mechanism |
+| [v6-身份系统](./docs/v6-身份系统.md) | Identity system |
+| [v7-分层记忆](./docs/v7-分层记忆.md) | Layered memory |
+| [v8-心跳系统](./docs/v8-心跳系统.md) | Heartbeat system |
+| [v9-会话管理](./docs/v9-会话管理.md) | Session management |
+
+### Evolution Guides (docs/evolution/)
+
+Step-by-step diffs between versions showing exactly what changed and why.
+
+---
+
+## Related Resources
+
+| Resource | Description |
+|----------|-------------|
+| [learn-claude-code](https://github.com/shareAI-lab/learn-claude-code) | Python version, 5 stages |
+| [Agent Skills Spec](https://agentskills.io/specification) | Official skills specification |
+| [Anthropic SDK](https://github.com/anthropics/anthropic-sdk-python) | Official Python SDK |
+
+---
+
+## Contributing
+
+Contributions welcome! Please feel free to submit issues and pull requests.
+
+- Add new skills in `skills/`
+- Improve documentation in `docs/`
+- Report bugs via [Issues](https://github.com/Shiyao-Huang/learn-openclaw/issues)
+
+---
+
+## License
+
+MIT
+
+---
+
+<p align="center">
+  <strong>Model as Agent. That's the whole secret.</strong>
+</p>
+
+<p align="center">
+  <a href="https://github.com/Shiyao-Huang">@Shiyao-Huang</a>
+</p>
