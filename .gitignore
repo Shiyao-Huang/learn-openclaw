@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# Environment
+.env
+.env.local
+
+# Logs
+logs/
+*.log
+
+# Memory/Cache
+.memory/
+memory/
+
+# OS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+nanobot/
