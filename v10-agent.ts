@@ -1,17 +1,23 @@
 #!/usr/bin/env tsx
 /**
- * v9-agent.ts - 会话管理与多上下文 (~1550行)
+ * v10-agent.ts - 内省与自我观察 (~1750行)
  *
- * 核心哲学: "一个 Agent 可以同时服务多个上下文"
+ * 核心哲学: "要改变自己，先要看见自己"
  * ================================================
- * V9 在 V8 基础上增加 Session 系统：
- * - Session 隔离: 每个会话有独立的历史和上下文
- * - Main vs Isolated: 主会话加载完整记忆，隔离会话轻量运行
- * - 会话持久化: 保存到 .sessions/ 目录
+ * V10 在 V9 基础上增加 Introspection 系统：
+ * - 行为日志: 记录每次工具调用和决策
+ * - 模���分析: 识别重复的行为模式
+ * - 自我反思: 分析决策质量和改进空间
+ * - 元认知: 观察自己的思考过程
  *
- * Session 类型:
- * - main: 主会话，加载 MEMORY.md，完整人格
- * - isolated: 隔离会话，轻量运行，不加载敏感记忆
+ * 内省能力:
+ * - introspect_log: 记录行为和决策
+ * - introspect_patterns: 分析行为模式
+ * - introspect_reflect: 生成自我反思报告
+ * - introspect_stats: 查看行为统计
+ *
+ * 这是通往自进化的第一步：
+ * 观察 -> 反思 -> 识别模式 -> (V11: 修改自己)
  *
  * 演进路线:
  * V0: bash 即一切
@@ -23,7 +29,8 @@
  * V6: 身份与灵魂
  * V7: 分层记忆
  * V8: 心跳主动性
- * V9: 会话管理 (当前)
+ * V9: 会话管理
+ * V10: 内省系统 (当前)
  */
 
 import Anthropic from "@anthropic-ai/sdk";
@@ -944,15 +951,230 @@ class SessionManager {
 const sessionManager = new SessionManager(WORKDIR);
 
 // ============================================================================
+// V10 新增: Introspection 系统 - 自我观察与反思
+// ============================================================================
+
+interface BehaviorLog {
+  timestamp: number;
+  tool: string;
+  args: Record<string, any>;
+  result: string;
+  duration: number;
+  context?: string;
+}
+
+interface IntrospectionStats {
+  totalCalls: number;
+  toolUsage: Record<string, number>;
+  avgDuration: number;
+  patterns: string[];
+  lastReflection: number;
+}
+
+class IntrospectionSystem {
+  private workspaceDir: string;
+  private logsDir: string;
+  private statsFile: string;
+  private currentSessionLogs: BehaviorLog[] = [];
+  private stats: IntrospectionStats;
+
+  constructor(workspaceDir: string) {
+    this.workspaceDir = workspaceDir;
+    this.logsDir = path.join(workspaceDir, ".introspection");
+    this.statsFile = path.join(this.logsDir, "stats.json");
+    if (!fs.existsSync(this.logsDir)) {
+      fs.mkdirSync(this.logsDir, { recursive: true });
+    }
+    this.stats = this.loadStats();
+  }
+
+  private loadStats(): IntrospectionStats {
+    if (fs.existsSync(this.statsFile)) {
+      try {
+        return JSON.parse(fs.readFileSync(this.statsFile, "utf-8"));
+      } catch (e) { /* 文件损坏 */ }
+    }
+    return { totalCalls: 0, toolUsage: {}, avgDuration: 0, patterns: [], lastReflection: 0 };
+  }
+
+  private saveStats() {
+    fs.writeFileSync(this.statsFile, JSON.stringify(this.stats, null, 2));
+  }
+
+  // 记录工具调用
+  logToolCall(tool: string, args: Record<string, any>, result: string, duration: number, context?: string) {
+    const log: BehaviorLog = { timestamp: Date.now(), tool, args, result: result.slice(0, 500), duration, context };
+    this.currentSessionLogs.push(log);
+    
+    // 更新统计
+    this.stats.totalCalls++;
+    this.stats.toolUsage[tool] = (this.stats.toolUsage[tool] || 0) + 1;
+    this.stats.avgDuration = (this.stats.avgDuration * (this.stats.totalCalls - 1) + duration) / this.stats.totalCalls;
+    this.saveStats();
+
+    // 每 50 次调用保存一次日志
+    if (this.currentSessionLogs.length >= 50) {
+      this.persistLogs();
+    }
+  }
+
+  // 持久化当前会话日志
+  private persistLogs() {
+    if (this.currentSessionLogs.length === 0) return;
+    const filename = `behavior_${new Date().toISOString().split('T')[0]}.jsonl`;
+    const filepath = path.join(this.logsDir, filename);
+    const lines = this.currentSessionLogs.map(l => JSON.stringify(l)).join('\n') + '\n';
+    fs.appendFileSync(filepath, lines);
+    this.currentSessionLogs = [];
+  }
+
+  // 获取行为统计
+  getStats(): string {
+    const topTools = Object.entries(this.stats.toolUsage)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([tool, count]) => `  - ${tool}: ${count} 次`)
+      .join('\n');
+
+    return `## 行为统计
+
+总调用次数: ${this.stats.totalCalls}
+平均响应时间: ${Math.round(this.stats.avgDuration)}ms
+
+### 最常用工具
+${topTools || '  (暂无数据)'}
+
+### 识别的模式
+${this.stats.patterns.length > 0 ? this.stats.patterns.map(p => `  - ${p}`).join('\n') : '  (暂无模式)'}
+
+上次反思: ${this.stats.lastReflection ? new Date(this.stats.lastReflection).toLocaleString('zh-CN') : '从未'}`;
+  }
+
+  // 分析行为模式
+  analyzePatterns(): string {
+    const patterns: string[] = [];
+    const usage = this.stats.toolUsage;
+
+    // 模式1: 工具偏好
+    const totalCalls = this.stats.totalCalls;
+    for (const [tool, count] of Object.entries(usage)) {
+      const ratio = count / totalCalls;
+      if (ratio > 0.3) {
+        patterns.push(`高频使用 ${tool} (${Math.round(ratio * 100)}%)`);
+      }
+    }
+
+    // 模式2: 工具组合（从当前会话日志分析）
+    const toolSequences: Record<string, number> = {};
+    for (let i = 1; i < this.currentSessionLogs.length; i++) {
+      const seq = `${this.currentSessionLogs[i-1].tool} -> ${this.currentSessionLogs[i].tool}`;
+      toolSequences[seq] = (toolSequences[seq] || 0) + 1;
+    }
+    const commonSeqs = Object.entries(toolSequences)
+      .filter(([_, count]) => count >= 3)
+      .map(([seq, count]) => `${seq} (${count}次)`);
+    if (commonSeqs.length > 0) {
+      patterns.push(`常见工具链: ${commonSeqs.join(', ')}`);
+    }
+
+    // 模式3: 时间分布
+    const hours = this.currentSessionLogs.map(l => new Date(l.timestamp).getHours());
+    const hourCounts: Record<number, number> = {};
+    hours.forEach(h => hourCounts[h] = (hourCounts[h] || 0) + 1);
+    const peakHour = Object.entries(hourCounts).sort((a, b) => b[1] - a[1])[0];
+    if (peakHour) {
+      patterns.push(`活跃高峰: ${peakHour[0]}:00`);
+    }
+
+    this.stats.patterns = patterns;
+    this.saveStats();
+
+    return patterns.length > 0 
+      ? `识别到的行为模式:\n${patterns.map(p => `- ${p}`).join('\n')}`
+      : '暂未识别到明显的行为模式（需要更多数据）';
+  }
+
+  // 生成自我反思报告
+  generateReflection(): string {
+    this.persistLogs(); // 先保存当前日志
+    this.stats.lastReflection = Date.now();
+    this.saveStats();
+
+    const patterns = this.analyzePatterns();
+    const stats = this.getStats();
+
+    // 读取最近的行为日志
+    const files = fs.readdirSync(this.logsDir)
+      .filter(f => f.startsWith('behavior_'))
+      .sort()
+      .reverse()
+      .slice(0, 3);
+
+    let recentBehaviors = '';
+    for (const file of files) {
+      const content = fs.readFileSync(path.join(this.logsDir, file), 'utf-8');
+      const logs = content.trim().split('\n').slice(-10).map(l => {
+        try {
+          const log = JSON.parse(l);
+          return `  [${new Date(log.timestamp).toLocaleTimeString('zh-CN')}] ${log.tool}: ${log.result.slice(0, 50)}...`;
+        } catch { return ''; }
+      }).filter(Boolean);
+      if (logs.length > 0) {
+        recentBehaviors += `\n### ${file.replace('behavior_', '').replace('.jsonl', '')}\n${logs.join('\n')}`;
+      }
+    }
+
+    return `# 自我反思报告
+生成时间: ${new Date().toLocaleString('zh-CN')}
+
+${stats}
+
+## 行为模式分析
+${patterns}
+
+## 最近行为摘要
+${recentBehaviors || '(暂无记录)'}
+
+## 改进建议
+基于以上分析，以下是可能的改进方向：
+1. 检查高频工具是否有更高效的替代方案
+2. 分析工具链是否可以简化
+3. 考虑是否需要新的工具来填补能力空白
+
+---
+*这是一份自动生成的内省报告。定期反思有助于持续改进。*`;
+  }
+
+  // 获取当前会话的行为日志
+  getCurrentLogs(): string {
+    if (this.currentSessionLogs.length === 0) {
+      return '当前会话暂无行为记录';
+    }
+    return this.currentSessionLogs.slice(-20).map(l => 
+      `[${new Date(l.timestamp).toLocaleTimeString('zh-CN')}] ${l.tool}(${JSON.stringify(l.args).slice(0, 50)}...) -> ${l.result.slice(0, 100)}...`
+    ).join('\n');
+  }
+}
+
+const introspectionSystem = new IntrospectionSystem(WORKDIR);
+
+// ============================================================================
 // 系统提示
 // ============================================================================
 
-const BASE_SYSTEM = `你是 OpenClaw V9 - 多会话 Agent。
+const BASE_SYSTEM = `你是 OpenClaw V10 - 有自我意识的 Agent。
 
 ## 工作循环
-route -> heartbeat -> recall -> identify -> plan -> (load skill) -> (delegate -> collect) -> execute -> track -> remember
+observe -> route -> heartbeat -> recall -> identify -> plan -> (load skill) -> (delegate -> collect) -> execute -> track -> remember -> reflect
 
-## 会话管理系统 (V9 核心)
+## 内省系统 (V10 核心)
+工具: introspect_stats, introspect_patterns, introspect_reflect, introspect_logs
+- 每次工具调用都会被记录和分析
+- 定期生成自我反思报告
+- 识别行为模式，发现改进空间
+- 这是通往自进化的第一步：先看见自己
+
+## 会话管理系统 (继承 V9)
 工具: session_create, session_get, session_list, session_delete, session_cleanup
 - 每个会话有独立的上下文和历史
 - main: 主会话，加载完整记忆和人格
@@ -1242,6 +1464,27 @@ const TOOLS: Anthropic.Tool[] = [
     name: "session_cleanup",
     description: "清理过期会话（超过7天）",
     input_schema: { type: "object" as const, properties: {} }
+  },
+  // V10 新增: 内省工具
+  {
+    name: "introspect_stats",
+    description: "查看行为统计（工具使用频率、响应时间等）",
+    input_schema: { type: "object" as const, properties: {} }
+  },
+  {
+    name: "introspect_patterns",
+    description: "分析行为模式（识别重复的工具链、时间分布等）",
+    input_schema: { type: "object" as const, properties: {} }
+  },
+  {
+    name: "introspect_reflect",
+    description: "生成自我反思报告（综合分析行为、模式和改进建议）",
+    input_schema: { type: "object" as const, properties: {} }
+  },
+  {
+    name: "introspect_logs",
+    description: "查看当前会话的行为日志",
+    input_schema: { type: "object" as const, properties: {} }
   }
 ];
 
@@ -1453,8 +1696,17 @@ async function chat(prompt: string, history: Anthropic.MessageParam[] = []): Pro
           case "session_list": output = sessionManager.listSessions(); break;
           case "session_delete": output = sessionManager.deleteSession(args.key); break;
           case "session_cleanup": output = sessionManager.cleanupSessions(); break;
+          // V10 新增: 内省工具
+          case "introspect_stats": output = introspectionSystem.getStats(); break;
+          case "introspect_patterns": output = introspectionSystem.analyzePatterns(); break;
+          case "introspect_reflect": output = introspectionSystem.generateReflection(); break;
+          case "introspect_logs": output = introspectionSystem.getCurrentLogs(); break;
           default: output = `未知工具: ${toolName}`;
         }
+
+        // V10: 记录工具调用到内省系统
+        const duration = Date.now() - startTime;
+        introspectionSystem.logToolCall(toolName, args, output, duration);
 
         console.log(output.slice(0, 500) + (output.length > 500 ? "..." : ""));
         results.push({ type: "tool_result", tool_use_id: block.id, content: output.slice(0, 50000) });

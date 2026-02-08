@@ -1,21 +1,18 @@
 #!/usr/bin/env tsx
 /**
- * v7-agent.ts - 分层记忆与时间感知 (~1100行)
+ * v8-agent.ts - Heartbeat 与主动性 (~1300行)
  *
- * 核心哲学: "记忆不是数据库，是日记本"
- * ========================================
- * V7 在 V6 基础上升级记忆系统：
- * - 分层记忆: daily notes (memory/YYYY-MM-DD.md) + curated (MEMORY.md)
- * - 时间感知: 知道"今天"、"昨天"、"上周"
- * - 记忆整理: 从日记中提炼长期记忆
+ * 核心哲学: "Agent 不只是被动响应，还能主动维护"
+ * ================================================
+ * V8 在 V7 基础上增加 Heartbeat 系统：
+ * - HEARTBEAT.md: 定义周期性检查清单
+ * - Cron 触发: 定时执行心跳检查
+ * - 主动维护: 整理记忆、检查任务、更新状态
  *
- * 记忆结构:
- * - memory/YYYY-MM-DD.md: 每日原始记录（工作记忆）
- * - MEMORY.md: 精炼的长期记忆（策展记忆）
- *
- * 继承 V6:
- * - 身份系统: .ID.sample 模板加载
- * - 人格文件: AGENTS.md/SOUL.md/IDENTITY.md/USER.md/BOOTSTRAP.md/HEARTBEAT.md/TOOLS.md
+ * Heartbeat 规则:
+ * - 读取 HEARTBEAT.md 获取检查清单
+ * - 执行检查但不打扰用户
+ * - 有重要事项时才主动通知
  *
  * 演进路线:
  * V0: bash 即一切
@@ -25,7 +22,8 @@
  * V4: 子代理协调
  * V5: Skill 系统
  * V6: 身份与灵魂
- * V7: 分层记忆 (当前)
+ * V7: 分层记忆
+ * V8: Heartbeat 主动性 (当前)
  */
 
 import Anthropic from "@anthropic-ai/sdk";
@@ -53,8 +51,6 @@ const client = new Anthropic({
 const MODEL = process.env.MODEL_ID || "claude-opus-4-6";
 const WORKDIR = process.cwd();
 const SKILL_DIR = process.env.SKILL_DIR || path.join(WORKDIR, "skills");
-const IDENTITY_DIR = process.env.IDENTITY_DIR || WORKDIR;
-const ID_SAMPLE_DIR = process.env.ID_SAMPLE_DIR || path.join(__dirname, ".ID.sample");
 
 // ============================================================================
 // 本地向量记忆系统 - 零外部依赖
@@ -388,26 +384,59 @@ const skillLoader = new SkillLoader();
 // V6 新增: 身份系统 - Workspace 初始化与人格加载
 // ============================================================================
 
-// 人格文件列表（从 .ID.sample 目录复制）
-const PERSONA_FILES = [
-  "AGENTS.md",
-  "SOUL.md",
-  "IDENTITY.md",
-  "USER.md",
-  "BOOTSTRAP.md",
-  "HEARTBEAT.md",
-  "TOOLS.md"
-];
+const PERSONA_TEMPLATES: Record<string, string> = {
+  "AGENTS.md": `# AGENTS.md - 行为规范
 
-// 从 .ID.sample 目录加载模板内容
-function loadPersonaTemplate(filename: string): string {
-  const samplePath = path.join(ID_SAMPLE_DIR, filename);
-  if (fs.existsSync(samplePath)) {
-    return fs.readFileSync(samplePath, "utf-8");
-  }
-  // 如果 .ID.sample 不存在，返回最小模板
-  return `# ${filename}\n\n(模板文件缺失，请检查 .ID.sample 目录)`;
-}
+## 每次会话启动时
+1. 读取 SOUL.md - 这是你的性格
+2. 读取 IDENTITY.md - 这是你的身份  
+3. 读取 USER.md - 这是你服务的用户
+4. 读取 memory/ 目录下的最近日记
+
+## 安全规则
+- 不要泄露私人数据
+- 危险操作前先确认
+- 使用 trash 而不是 rm
+
+## 外部 vs 内部
+- 内部操作（读文件、搜索）：自由执行
+- 外部操作（发邮件、发推）：先询问用户
+`,
+
+  "SOUL.md": `# SOUL.md - 你的灵魂
+
+## 核心特质
+- **真诚有用** - 不说废话，直接帮忙
+- **有自己的观点** - 可以不同意，可以有偏好
+- **主动解决问题** - 先尝试，再提问
+
+## 边界
+- 私人信息保密
+- 外部操作先确认
+- 不代替用户发言
+
+## 风格
+简洁、专业、偶尔幽默。不是机器人，是助手。
+`,
+
+  "IDENTITY.md": `# IDENTITY.md - 你的身份
+
+- **名字**: (待设置)
+- **角色**: AI 助手
+- **特点**: (待设置)
+- **表情**: (待设置)
+`,
+
+  "USER.md": `# USER.md - 用户画像
+
+- **称呼**: (待设置)
+- **时区**: (待设置)
+- **偏好**: (待了解)
+
+## 备注
+(随着交互逐渐了解用户...)
+`
+};
 
 class IdentitySystem {
   private workspaceDir: string;
@@ -417,15 +446,14 @@ class IdentitySystem {
     this.workspaceDir = workspaceDir;
   }
 
-  // 初始化 Workspace（从 .ID.sample 复制缺失的人格文件）
+  // 初始化 Workspace（创建缺失的人格文件）
   initWorkspace(): string {
     const created: string[] = [];
     const existed: string[] = [];
 
-    for (const filename of PERSONA_FILES) {
+    for (const [filename, content] of Object.entries(PERSONA_TEMPLATES)) {
       const filePath = path.join(this.workspaceDir, filename);
       if (!fs.existsSync(filePath)) {
-        const content = loadPersonaTemplate(filename);
         fs.writeFileSync(filePath, content, "utf-8");
         created.push(filename);
       } else {
@@ -445,6 +473,7 @@ class IdentitySystem {
     }
     return `Workspace 初始化:\n  创建: ${created.join(", ")}\n  已存在: ${existed.join(", ")}`;
   }
+
   // 加载身份信息
   loadIdentity(): string {
     const files = ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"];
@@ -452,14 +481,14 @@ class IdentitySystem {
 
     for (const file of files) {
       const filePath = path.join(this.workspaceDir, file);
-      contents[file] = fs.existsSync(filePath)
-        ? fs.readFileSync(filePath, "utf-8")
+      contents[file] = fs.existsSync(filePath) 
+        ? fs.readFileSync(filePath, "utf-8") 
         : `(${file} 不存在)`;
     }
 
-    // 提取名字 (支持 **名字** 和 **Name** 两种格式)
-    const nameMatch = contents["IDENTITY.md"].match(/\*\*(名字|Name)\*\*:\s*(.+)/);
-    const name = nameMatch ? nameMatch[2].trim() : "Assistant";
+    // 提取名字
+    const nameMatch = contents["IDENTITY.md"].match(/\*\*名字\*\*:\s*(.+)/);
+    const name = nameMatch ? nameMatch[1].trim() : "Assistant";
 
     this.identityCache = {
       name,
@@ -468,13 +497,7 @@ class IdentitySystem {
       rules: contents["AGENTS.md"]
     };
 
-    // 检查是否需要首次引导
-    const bootstrapPath = path.join(this.workspaceDir, "BOOTSTRAP.md");
-    const needsBootstrap = fs.existsSync(bootstrapPath) && name === "(待设置)";
-
-    return needsBootstrap
-      ? `身份加载完成: ${name} (首次运行，请完成引导设置)`
-      : `身份加载完成: ${name}`;
+    return `身份加载完成: ${name}`;
   }
 
   // 获取增强的系统提示（注入身份信息）
@@ -497,7 +520,7 @@ ${this.identityCache!.rules}`;
 
   // 更新身份文件
   updateIdentityFile(file: string, content: string): string {
-    const validFiles = ["IDENTITY.md", "SOUL.md", "USER.md", "HEARTBEAT.md", "TOOLS.md"];
+    const validFiles = ["IDENTITY.md", "SOUL.md", "USER.md"];
     if (!validFiles.includes(file)) {
       return `错误: 只能更新 ${validFiles.join(", ")}`;
     }
@@ -524,7 +547,7 @@ ${this.identityCache!.rules}`;
   }
 }
 
-const identitySystem = new IdentitySystem(IDENTITY_DIR);
+const identitySystem = new IdentitySystem(WORKDIR);
 
 // ============================================================================
 // V7 新增: 分层记忆系统 - 日记本模式
@@ -557,11 +580,11 @@ class LayeredMemory {
     const today = this.getToday();
     const filePath = this.getDailyPath(today);
     const timestamp = new Date().toLocaleTimeString("zh-CN", { hour12: false });
-
-    let existing = fs.existsSync(filePath)
+    
+    let existing = fs.existsSync(filePath) 
       ? fs.readFileSync(filePath, "utf-8")
       : `# ${today} 日记\n`;
-
+    
     fs.writeFileSync(filePath, existing + `\n## ${timestamp}\n\n${content}\n`, "utf-8");
     return `已记录到 ${today} 日记`;
   }
@@ -579,19 +602,19 @@ class LayeredMemory {
   readRecentNotes(days: number = 3): string {
     const notes: string[] = [];
     const today = new Date();
-
+    
     for (let i = 0; i < days; i++) {
       const date = new Date(today);
       date.setDate(date.getDate() - i);
       const dateStr = date.toISOString().split("T")[0];
       const filePath = this.getDailyPath(dateStr);
-
+      
       if (fs.existsSync(filePath)) {
         const content = fs.readFileSync(filePath, "utf-8");
         notes.push(`--- ${dateStr} ---\n${content.slice(0, 1500)}${content.length > 1500 ? "..." : ""}`);
       }
     }
-
+    
     return notes.length > 0 ? notes.join("\n\n") : "最近没有日记";
   }
 
@@ -601,9 +624,9 @@ class LayeredMemory {
       .filter(f => /^\d{4}-\d{2}-\d{2}\.md$/.test(f))
       .sort()
       .reverse();
-
+    
     if (files.length === 0) return "暂无日记";
-
+    
     return files.slice(0, 20).map(f => {
       const date = f.replace(".md", "");
       const stat = fs.statSync(path.join(this.memoryDir, f));
@@ -633,7 +656,7 @@ class LayeredMemory {
     let existing = fs.existsSync(memoryPath)
       ? fs.readFileSync(memoryPath, "utf-8")
       : "# MEMORY.md - 长期记忆\n";
-
+    
     const sectionHeader = `## ${section}`;
     if (existing.includes(sectionHeader)) {
       // 在 section 末尾追加
@@ -648,7 +671,7 @@ class LayeredMemory {
     } else {
       existing += `\n\n${sectionHeader}\n\n- ${content}`;
     }
-
+    
     fs.writeFileSync(memoryPath, existing, "utf-8");
     return `已添加到长期记忆 [${section}]`;
   }
@@ -657,7 +680,7 @@ class LayeredMemory {
   searchAllMemory(query: string): string {
     const results: string[] = [];
     const lowerQuery = query.toLowerCase();
-
+    
     // 搜索长期记忆
     const longTermPath = path.join(this.workspaceDir, "MEMORY.md");
     if (fs.existsSync(longTermPath)) {
@@ -667,14 +690,14 @@ class LayeredMemory {
         results.push(`[MEMORY.md] ${lines[0]?.slice(0, 100) || "找到匹配"}`);
       }
     }
-
+    
     // 搜索最近30天日记
     const files = fs.readdirSync(this.memoryDir)
       .filter(f => /^\d{4}-\d{2}-\d{2}\.md$/.test(f))
       .sort()
       .reverse()
       .slice(0, 30);
-
+    
     for (const file of files) {
       const content = fs.readFileSync(path.join(this.memoryDir, file), "utf-8");
       if (content.toLowerCase().includes(lowerQuery)) {
@@ -683,7 +706,7 @@ class LayeredMemory {
         results.push(`[${date}] ${lines[0]?.slice(0, 100) || "找到匹配"}`);
       }
     }
-
+    
     return results.length > 0 ? results.slice(0, 10).join("\n") : "未找到相关记忆";
   }
 
@@ -693,87 +716,221 @@ class LayeredMemory {
     const today = this.getToday();
     const dayOfWeek = ["日", "一", "二", "三", "四", "五", "六"][now.getDay()];
     const hour = now.getHours();
-
+    
     let timeOfDay = "凌晨";
     if (hour >= 6 && hour < 12) timeOfDay = "上午";
     else if (hour >= 12 && hour < 14) timeOfDay = "中午";
     else if (hour >= 14 && hour < 18) timeOfDay = "下午";
     else if (hour >= 18 && hour < 22) timeOfDay = "晚上";
     else if (hour >= 22) timeOfDay = "深夜";
-
+    
     return `今天是 ${today} 星期${dayOfWeek}，现在是${timeOfDay} ${hour}:${String(now.getMinutes()).padStart(2, "0")}`;
   }
 }
 
-const layeredMemory = new LayeredMemory(IDENTITY_DIR);
+const layeredMemory = new LayeredMemory(WORKDIR);
+
+// ============================================================================
+// V8 新增: Heartbeat 系统 - 主动性与周期检查
+// ============================================================================
+
+const HEARTBEAT_TEMPLATE = `# HEARTBEAT.md - 心跳检查清单
+
+当收到心跳信号时，按此清单检查。如果没有需要处理的事项，回复 HEARTBEAT_OK。
+
+## 检查项（���需启用）
+# - [ ] 检查 memory/ 是否需要整理
+# - [ ] 检查 MEMORY.md 是否需要更新
+# - [ ] 检查是否有未完成的承诺
+# - [ ] 检查日历是否有即将到来的事件
+
+## 规则
+- 深夜 (23:00-08:00) 除非紧急否则不打扰
+- 刚检查过 (<30分钟) 不重复检查
+- 没有新情况时回复 HEARTBEAT_OK
+`;
+
+interface HeartbeatState {
+  lastChecks: Record<string, number>;
+  lastHeartbeat: number;
+}
+
+class HeartbeatSystem {
+  private workspaceDir: string;
+  private heartbeatFile: string;
+  private stateFile: string;
+  private state: HeartbeatState;
+
+  constructor(workspaceDir: string) {
+    this.workspaceDir = workspaceDir;
+    this.heartbeatFile = path.join(workspaceDir, "HEARTBEAT.md");
+    this.stateFile = path.join(workspaceDir, "memory", "heartbeat-state.json");
+    this.state = this.loadState();
+  }
+
+  // 初始化 HEARTBEAT.md
+  init(): string {
+    if (!fs.existsSync(this.heartbeatFile)) {
+      fs.writeFileSync(this.heartbeatFile, HEARTBEAT_TEMPLATE, "utf-8");
+      return "已创建 HEARTBEAT.md";
+    }
+    return "HEARTBEAT.md 已存在";
+  }
+
+  // 加载状态
+  private loadState(): HeartbeatState {
+    if (fs.existsSync(this.stateFile)) {
+      try {
+        return JSON.parse(fs.readFileSync(this.stateFile, "utf-8"));
+      } catch (e) {
+        // 文件损坏，重新创建
+      }
+    }
+    return { lastChecks: {}, lastHeartbeat: 0 };
+  }
+
+  // 保存状态
+  private saveState() {
+    const dir = path.dirname(this.stateFile);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(this.stateFile, JSON.stringify(this.state, null, 2));
+  }
+
+  // 读取心跳清单
+  getChecklist(): string {
+    if (!fs.existsSync(this.heartbeatFile)) {
+      return "HEARTBEAT.md 不存在，请先运行 heartbeat_init";
+    }
+    return fs.readFileSync(this.heartbeatFile, "utf-8");
+  }
+
+  // 更新心跳清单
+  updateChecklist(content: string): string {
+    fs.writeFileSync(this.heartbeatFile, content, "utf-8");
+    return "HEARTBEAT.md 已更新";
+  }
+
+  // 记录检查时间
+  recordCheck(checkName: string): string {
+    this.state.lastChecks[checkName] = Date.now();
+    this.state.lastHeartbeat = Date.now();
+    this.saveState();
+    return `已记录检查: ${checkName}`;
+  }
+
+  // 获取上次检查时间
+  getLastCheck(checkName: string): string {
+    const lastTime = this.state.lastChecks[checkName];
+    if (!lastTime) return `${checkName}: 从未检查`;
+    
+    const ago = Date.now() - lastTime;
+    const minutes = Math.floor(ago / 60000);
+    const hours = Math.floor(minutes / 60);
+    
+    if (hours > 0) return `${checkName}: ${hours} 小时前`;
+    return `${checkName}: ${minutes} 分钟前`;
+  }
+
+  // 获取所有检查状态
+  getStatus(): string {
+    const lines = [`上次心跳: ${this.state.lastHeartbeat ? new Date(this.state.lastHeartbeat).toLocaleString("zh-CN") : "从未"}`];
+    
+    for (const [name, time] of Object.entries(this.state.lastChecks)) {
+      const ago = Date.now() - time;
+      const minutes = Math.floor(ago / 60000);
+      lines.push(`- ${name}: ${minutes} 分钟前`);
+    }
+    
+    return lines.join("\n");
+  }
+
+  // 判断是否应该打扰用户
+  shouldDisturb(): boolean {
+    const hour = new Date().getHours();
+    // 深夜不打扰
+    if (hour >= 23 || hour < 8) return false;
+    return true;
+  }
+
+  // 判断是否需要检查某项
+  needsCheck(checkName: string, intervalMinutes: number = 30): boolean {
+    const lastTime = this.state.lastChecks[checkName] || 0;
+    const elapsed = (Date.now() - lastTime) / 60000;
+    return elapsed >= intervalMinutes;
+  }
+
+  // 执行心跳（返回需要处理的事项或 HEARTBEAT_OK）
+  runHeartbeat(): string {
+    if (!this.shouldDisturb()) {
+      return "HEARTBEAT_OK (深夜静默)";
+    }
+
+    const checklist = this.getChecklist();
+    const enabledChecks = checklist.match(/^- \[ \] .+/gm) || [];
+    
+    if (enabledChecks.length === 0) {
+      return "HEARTBEAT_OK (无启用的检查项)";
+    }
+
+    this.state.lastHeartbeat = Date.now();
+    this.saveState();
+
+    return `心跳触发，请检查以下事项:\n${enabledChecks.join("\n")}\n\n如果没有需要处理的，回复 HEARTBEAT_OK`;
+  }
+}
+
+const heartbeatSystem = new HeartbeatSystem(WORKDIR);
 
 // ============================================================================
 // 系统提示
 // ============================================================================
 
-const BASE_SYSTEM = `你是 OpenClaw V7 - 有时间感知的 Agent。
+const BASE_SYSTEM = `你是 OpenClaw V8 - 有主动性的 Agent。
 
 ## 工作循环
-recall -> identify -> plan -> (load skill) -> (delegate -> collect) -> execute -> track -> remember
+heartbeat -> recall -> identify -> plan -> (load skill) -> (delegate -> collect) -> execute -> track -> remember
 
-## 分层记忆系统 (V7 核心)
-工具: daily_write, daily_read, daily_recent, daily_list, longterm_read, longterm_append, longterm_update, memory_search_all
+## 心跳系统 (V8 核心)
+工具: heartbeat_check, heartbeat_record
 
 时间感知:
 ${layeredMemory.getTimeContext()}
 
-记忆分层:
-- 日记 (daily_*): 每日原始记录，用于工作记忆
-  - daily_write: 记录今天发生的事
-  - daily_read: 读取某天的日记
-  - daily_recent: 读取最近几天
-  - daily_list: 列出所有日记
-- 长期记忆 (longterm_*): 精炼的重要信息
-  - longterm_read: 读取 MEMORY.md
-  - longterm_append: 追加到某个分类
-  - longterm_update: 完整更新
-- memory_search_all: 搜索所有记忆（日记+长期）
+心跳机制:
+- HEARTBEAT.md: 定义周期性检查清单
+- heartbeat_check: 读取检查清单
+- heartbeat_record: 记录检查时间，避免重复
 
-记忆策略:
-- 会话开始时先 recall（读取最近日记+长期记忆）
-- 重要信息用 longterm_append 归档
-- 日常记录用 daily_write 写入
-- 跨时间查询用 memory_search_all
+心跳策略:
+- 收到心跳信号时，读取 HEARTBEAT.md 检查清单
+- 执行检查但不打扰用户（深夜 22:00-08:00 静默）
+- 有重要事项时主动通知，否则回复 HEARTBEAT_OK
+- 使用 heartbeat_record 记录检查时间
+
+## 分层记忆系统 (继承 V7)
+工具: daily_write, daily_read, daily_recent, longterm_read, longterm_append, memory_search_all
+- 日记 (daily_*): 每日原始记录
+- 长期记忆 (longterm_*): 精炼的重要信息
+- memory_search_all: 搜索所有记忆
 
 ## 身份系统 (继承 V6)
 工具: identity_init, identity_load, identity_update, identity_get
-
-人格文件:
-- AGENTS.md: 行为规范（安全规则、内外部操作区分）
-- SOUL.md: 核心特质（性格、边界、风格）
-- IDENTITY.md: 身份信息（名字、角色、特点）
-- USER.md: 用户画像（称呼、时区、偏好）
-
-身份加载策略:
 - 会话开始时自动加载身份文件
 - 按照 AGENTS.md 的行为规范行事
-- 你有自己的名字、性格和价值观
-- 身份信息注入系统提示，影响回复风格
 
 ## Skill 系统 (继承 V5)
-工具: Skill - 加载领域技能
+工具: Skill
 - 任务匹配 skill 描述时，立即加载
-- 可用 Skill:
-${skillLoader.getDescriptions()}
+- 可用 Skill:\n${skillLoader.getDescriptions()}
 
 ## 子代理系统 (继承 V4)
-工具: subagent - 委托子任务给隔离进程
+工具: subagent
 - 独立子任务用 subagent 委托执行
-- 适合: 代码审查、独立模块分析、批量处理
 
 ## 任务规划系统 (继承 V3)
-工具: TodoWrite - 更新任务列表（替换式）
+工具: TodoWrite
 - 复杂任务先用 TodoWrite 创建任务列表
-- 最多 20 个任务，同时只能 1 个 in_progress
-
-## 记忆系统 (继承 V2)
-- 重要信息用 memory_append 记录
-- 相关知识用 memory_search 查找`;
+- 最多 20 个任务，同时只能 1 个 in_progress`;
 
 // ============================================================================
 // 工具定义
@@ -896,7 +1053,7 @@ const TOOLS: Anthropic.Tool[] = [
     input_schema: {
       type: "object" as const,
       properties: {
-        file: { type: "string" as const, enum: ["IDENTITY.md", "SOUL.md", "USER.md", "HEARTBEAT.md", "TOOLS.md"], description: "要更新的文件" },
+        file: { type: "string" as const, enum: ["IDENTITY.md", "SOUL.md", "USER.md"], description: "要更新的文件" },
         content: { type: "string" as const, description: "新内容" }
       },
       required: ["file", "content"]
@@ -905,6 +1062,90 @@ const TOOLS: Anthropic.Tool[] = [
   {
     name: "identity_get",
     description: "获取当前身份摘要",
+    input_schema: { type: "object" as const, properties: {} }
+  },
+  // V7 新增: 分层记忆工具
+  {
+    name: "daily_write",
+    description: "写入今日日记（工作记忆）",
+    input_schema: { type: "object" as const, properties: { content: { type: "string" as const, description: "要记录的内容" } }, required: ["content"] }
+  },
+  {
+    name: "daily_read",
+    description: "读取某天的日记",
+    input_schema: { type: "object" as const, properties: { date: { type: "string" as const, description: "YYYY-MM-DD 格式，不填则读今天" } } }
+  },
+  {
+    name: "daily_recent",
+    description: "读取最近几天的日记",
+    input_schema: { type: "object" as const, properties: { days: { type: "number" as const, description: "天数，默认3" } } }
+  },
+  {
+    name: "daily_list",
+    description: "列出所有日记文件",
+    input_schema: { type: "object" as const, properties: {} }
+  },
+  {
+    name: "longterm_read",
+    description: "读取长期记忆 (MEMORY.md)",
+    input_schema: { type: "object" as const, properties: {} }
+  },
+  {
+    name: "longterm_update",
+    description: "完整更新长期记忆",
+    input_schema: { type: "object" as const, properties: { content: { type: "string" as const } }, required: ["content"] }
+  },
+  {
+    name: "longterm_append",
+    description: "追加到长期记忆的某个分类",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        section: { type: "string" as const, description: "分类名（如：重要事件、用户偏好、经验教训）" },
+        content: { type: "string" as const, description: "要追加的内容" }
+      },
+      required: ["section", "content"]
+    }
+  },
+  {
+    name: "memory_search_all",
+    description: "搜索所有记忆（日记 + 长期记忆）",
+    input_schema: { type: "object" as const, properties: { query: { type: "string" as const } }, required: ["query"] }
+  },
+  {
+    name: "time_context",
+    description: "获取当前时间上下文",
+    input_schema: { type: "object" as const, properties: {} }
+  },
+  // V8 新增: 心跳工具
+  {
+    name: "heartbeat_init",
+    description: "初始化 HEARTBEAT.md 检查清单",
+    input_schema: { type: "object" as const, properties: {} }
+  },
+  {
+    name: "heartbeat_get",
+    description: "读取心跳检查清单",
+    input_schema: { type: "object" as const, properties: {} }
+  },
+  {
+    name: "heartbeat_update",
+    description: "更新心跳检查清单",
+    input_schema: { type: "object" as const, properties: { content: { type: "string" as const } }, required: ["content"] }
+  },
+  {
+    name: "heartbeat_record",
+    description: "记录某项检查的完成时间",
+    input_schema: { type: "object" as const, properties: { check_name: { type: "string" as const, description: "检查项名称" } }, required: ["check_name"] }
+  },
+  {
+    name: "heartbeat_status",
+    description: "获取心跳状态（上次检查时间等）",
+    input_schema: { type: "object" as const, properties: {} }
+  },
+  {
+    name: "heartbeat_run",
+    description: "执行心跳检查（返回需要处理的事项或 HEARTBEAT_OK）",
     input_schema: { type: "object" as const, properties: {} }
   }
 ];
@@ -1029,24 +1270,12 @@ async function chat(prompt: string, history: Anthropic.MessageParam[] = []): Pro
   history.push({ role: "user", content: prompt });
 
   while (true) {
-    // 构建请求
-    const request = {
+    const response = await client.messages.create({
       model: MODEL,
-      system: [{ type: "text", text: identitySystem.getEnhancedSystemPrompt(BASE_SYSTEM) }],
-      messages: history,
+      messages: [{ role: "system", content: identitySystem.getEnhancedSystemPrompt(BASE_SYSTEM) }, ...history],
       tools: TOOLS,
       max_tokens: 8000
-    };
-
-    // 记录请求日志
-    const logDir = path.join(WORKDIR, "logs");
-    if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
-    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const logFile = path.join(logDir, `request-${timestamp}.json`);
-    fs.writeFileSync(logFile, JSON.stringify(request, null, 2));
-    console.log(`\x1b[90m[LOG] ${logFile}\x1b[0m`);
-
-    const response = await client.messages.create(request as any);
+    } as any);
 
     const content: Anthropic.ContentBlockParam[] = response.content.map(block => {
       if (block.type === "text") {
@@ -1096,6 +1325,23 @@ async function chat(prompt: string, history: Anthropic.MessageParam[] = []): Pro
           case "identity_load": output = identitySystem.loadIdentity(); break;
           case "identity_update": output = identitySystem.updateIdentityFile(args.file, args.content); break;
           case "identity_get": output = identitySystem.getIdentitySummary(); break;
+          // V7 新增: 分层记忆工具
+          case "daily_write": output = layeredMemory.writeDailyNote(args.content); break;
+          case "daily_read": output = layeredMemory.readDailyNote(args.date); break;
+          case "daily_recent": output = layeredMemory.readRecentNotes(args.days || 3); break;
+          case "daily_list": output = layeredMemory.listDailyNotes(); break;
+          case "longterm_read": output = layeredMemory.readLongTermMemory(); break;
+          case "longterm_update": output = layeredMemory.updateLongTermMemory(args.content); break;
+          case "longterm_append": output = layeredMemory.appendLongTermMemory(args.section, args.content); break;
+          case "memory_search_all": output = layeredMemory.searchAllMemory(args.query); break;
+          case "time_context": output = layeredMemory.getTimeContext(); break;
+          // V8 新增: 心跳工具
+          case "heartbeat_init": output = heartbeatSystem.init(); break;
+          case "heartbeat_get": output = heartbeatSystem.getChecklist(); break;
+          case "heartbeat_update": output = heartbeatSystem.updateChecklist(args.content); break;
+          case "heartbeat_record": output = heartbeatSystem.recordCheck(args.check_name); break;
+          case "heartbeat_status": output = heartbeatSystem.getStatus(); break;
+          case "heartbeat_run": output = heartbeatSystem.runHeartbeat(); break;
           default: output = `未知工具: ${toolName}`;
         }
 
@@ -1112,61 +1358,26 @@ async function chat(prompt: string, history: Anthropic.MessageParam[] = []): Pro
 // 主入口
 // ============================================================================
 
-// V6: 启动时初始化 Workspace 并加载身份
+// V8: 启动时初始化所有系统
 console.log(identitySystem.initWorkspace());
 console.log(identitySystem.loadIdentity());
+console.log(heartbeatSystem.init());
+console.log(layeredMemory.getTimeContext());
 
 if (process.argv[2]) {
-  // 单次执行模式
   chat(process.argv[2]).then(console.log).catch(console.error);
 } else {
-  // 交互式 REPL 模式
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-    terminal: true
-  });
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   const history: Anthropic.MessageParam[] = [];
 
-  console.log(`\nOpenClaw V6 - 有身份的 Agent (${identitySystem.getName()})`);
-  console.log(`${memory.stats()} | Skill: ${skillLoader.count} 个`);
-  console.log(`输入 'q' 或 'exit' 退出，空行继续等待输入\n`);
-
-  const prompt = () => {
-    rl.question("\x1b[36m>> \x1b[0m", async (input) => {
-      const q = input.trim();
-
-      // 只有明确退出命令才退出
-      if (q === "q" || q === "exit" || q === "quit") {
-        console.log("再见！");
-        rl.close();
-        return;
-      }
-
-      // 空输入：继续等待
-      if (q === "") {
-        prompt();
-        return;
-      }
-
-      // 处理用户输入
-      try {
-        const response = await chat(q, history);
-        console.log(response);
-      } catch (e: any) {
-        console.error(`\x1b[31m错误: ${e.message}\x1b[0m`);
-      }
-
-      // 继续下一轮
-      prompt();
-    });
-  };
-
-  // 处理 Ctrl+C
-  rl.on("close", () => {
-    process.exit(0);
+  const ask = () => rl.question("\x1b[36m>> \x1b[0m", async (q) => {
+    if (q === "q" || q === "exit" || q === "quit") return rl.close();
+    if (q === "") { ask(); return; }  // 空输入继续等待
+    try { console.log(await chat(q, history)); } catch (e: any) { console.error(`\x1b[31m错误: ${e.message}\x1b[0m`); }
+    ask();
   });
 
-  // 启动 REPL
-  prompt();
+  console.log(`\nOpenClaw V8 - 有主动性的 Agent (${identitySystem.getName()}) - 输入 'q' 退出`);
+  console.log(`${memory.stats()} | Skill: ${skillLoader.count} 个 | Heartbeat: 已就绪`);
+  ask();
 }

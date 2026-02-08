@@ -1,17 +1,17 @@
 #!/usr/bin/env tsx
 /**
- * v8-agent.ts - Heartbeat 与主动性 (~1300行)
+ * v8-agent.ts - 心跳与主动性 (~1350行)
  *
  * 核心哲学: "Agent 不只是被动响应，还能主动维护"
  * ================================================
  * V8 在 V7 基础上增加 Heartbeat 系统：
  * - HEARTBEAT.md: 定义周期性检查清单
- * - Cron 触发: 定时执行心跳检查
+ * - 心跳状态: 记录上次检查时间，避免重复
  * - 主动维护: 整理记忆、检查任务、更新状态
  *
  * Heartbeat 规则:
  * - 读取 HEARTBEAT.md 获取检查清单
- * - 执行检查但不打扰用户
+ * - 深夜 (23:00-08:00) 静默模式
  * - 有重要事项时才主动通知
  *
  * 演进路线:
@@ -23,7 +23,7 @@
  * V5: Skill 系统
  * V6: 身份与灵魂
  * V7: 分层记忆
- * V8: Heartbeat 主动性 (当前)
+ * V8: 心跳主动性 (当前)
  */
 
 import Anthropic from "@anthropic-ai/sdk";
@@ -51,6 +51,8 @@ const client = new Anthropic({
 const MODEL = process.env.MODEL_ID || "claude-opus-4-6";
 const WORKDIR = process.cwd();
 const SKILL_DIR = process.env.SKILL_DIR || path.join(WORKDIR, "skills");
+const IDENTITY_DIR = process.env.IDENTITY_DIR || WORKDIR;
+const ID_SAMPLE_DIR = process.env.ID_SAMPLE_DIR || path.join(__dirname, ".ID.sample");
 
 // ============================================================================
 // 本地向量记忆系统 - 零外部依赖
@@ -384,59 +386,26 @@ const skillLoader = new SkillLoader();
 // V6 新增: 身份系统 - Workspace 初始化与人格加载
 // ============================================================================
 
-const PERSONA_TEMPLATES: Record<string, string> = {
-  "AGENTS.md": `# AGENTS.md - 行为规范
+// 人格文件列表（从 .ID.sample 目录复制）
+const PERSONA_FILES = [
+  "AGENTS.md",
+  "SOUL.md",
+  "IDENTITY.md",
+  "USER.md",
+  "BOOTSTRAP.md",
+  "HEARTBEAT.md",
+  "TOOLS.md"
+];
 
-## 每次会话启动时
-1. 读取 SOUL.md - 这是你的性格
-2. 读取 IDENTITY.md - 这是你的身份  
-3. 读取 USER.md - 这是你服务的用户
-4. 读取 memory/ 目录下的最近日记
-
-## 安全规则
-- 不要泄露私人数据
-- 危险操作前先确认
-- 使用 trash 而不是 rm
-
-## 外部 vs 内部
-- 内部操作（读文件、搜索）：自由执行
-- 外部操作（发邮件、发推）：先询问用户
-`,
-
-  "SOUL.md": `# SOUL.md - 你的灵魂
-
-## 核心特质
-- **真诚有用** - 不说废话，直接帮忙
-- **有自己的观点** - 可以不同意，可以有偏好
-- **主动解决问题** - 先尝试，再提问
-
-## 边界
-- 私人信息保密
-- 外部操作先确认
-- 不代替用户发言
-
-## 风格
-简洁、专业、偶尔幽默。不是机器人，是助手。
-`,
-
-  "IDENTITY.md": `# IDENTITY.md - 你的身份
-
-- **名字**: (待设置)
-- **角色**: AI 助手
-- **特点**: (待设置)
-- **表情**: (待设置)
-`,
-
-  "USER.md": `# USER.md - 用户画像
-
-- **称呼**: (待设置)
-- **时区**: (待设置)
-- **偏好**: (待了解)
-
-## 备注
-(随着交互逐渐了解用户...)
-`
-};
+// 从 .ID.sample 目录加载模板内容
+function loadPersonaTemplate(filename: string): string {
+  const samplePath = path.join(ID_SAMPLE_DIR, filename);
+  if (fs.existsSync(samplePath)) {
+    return fs.readFileSync(samplePath, "utf-8");
+  }
+  // 如果 .ID.sample 不存在，返回最小模板
+  return `# ${filename}\n\n(模板文件缺失，请检查 .ID.sample 目录)`;
+}
 
 class IdentitySystem {
   private workspaceDir: string;
@@ -446,14 +415,21 @@ class IdentitySystem {
     this.workspaceDir = workspaceDir;
   }
 
-  // 初始化 Workspace（创建缺失的人格文件）
+  // 初始化 Workspace（从 .ID.sample 复制缺失的人格文件）
   initWorkspace(): string {
     const created: string[] = [];
     const existed: string[] = [];
 
-    for (const [filename, content] of Object.entries(PERSONA_TEMPLATES)) {
+    // 确保 workspace 目录存在
+    if (!fs.existsSync(this.workspaceDir)) {
+      fs.mkdirSync(this.workspaceDir, { recursive: true });
+      created.push(path.basename(this.workspaceDir) + "/");
+    }
+
+    for (const filename of PERSONA_FILES) {
       const filePath = path.join(this.workspaceDir, filename);
       if (!fs.existsSync(filePath)) {
+        const content = loadPersonaTemplate(filename);
         fs.writeFileSync(filePath, content, "utf-8");
         created.push(filename);
       } else {
@@ -481,23 +457,33 @@ class IdentitySystem {
 
     for (const file of files) {
       const filePath = path.join(this.workspaceDir, file);
-      contents[file] = fs.existsSync(filePath) 
-        ? fs.readFileSync(filePath, "utf-8") 
+      contents[file] = fs.existsSync(filePath)
+        ? fs.readFileSync(filePath, "utf-8")
         : `(${file} 不存在)`;
     }
 
-    // 提取名字
-    const nameMatch = contents["IDENTITY.md"].match(/\*\*名字\*\*:\s*(.+)/);
-    const name = nameMatch ? nameMatch[1].trim() : "Assistant";
+    // 提取名字 (支持 **名字** 和 **Name**，中英文冒号)
+    const nameMatch = contents["IDENTITY.md"].match(/\*\*(名字|Name)\*\*[：:]\s*(.+)/);
+    const rawName = nameMatch ? nameMatch[2].trim() : "";
+    // 过滤掉占位符文本
+    const name = (rawName && !rawName.startsWith("_（") && !rawName.startsWith("_("))
+      ? rawName
+      : "";
 
     this.identityCache = {
-      name,
+      name: name || "Assistant",
       soul: contents["SOUL.md"],
       user: contents["USER.md"],
       rules: contents["AGENTS.md"]
     };
 
-    return `身份加载完成: ${name}`;
+    // 检查是否需要首次引导：BOOTSTRAP.md 存在且名字未设置
+    const bootstrapPath = path.join(this.workspaceDir, "BOOTSTRAP.md");
+    const needsBootstrap = fs.existsSync(bootstrapPath) && !name;
+
+    return needsBootstrap
+      ? `🌟 首次运行！请与我对话完成身份设置。`
+      : `身份加载完成: ${this.identityCache.name}`;
   }
 
   // 获取增强的系统提示（注入身份信息）
@@ -520,7 +506,7 @@ ${this.identityCache!.rules}`;
 
   // 更新身份文件
   updateIdentityFile(file: string, content: string): string {
-    const validFiles = ["IDENTITY.md", "SOUL.md", "USER.md"];
+    const validFiles = ["IDENTITY.md", "SOUL.md", "USER.md", "HEARTBEAT.md", "TOOLS.md"];
     if (!validFiles.includes(file)) {
       return `错误: 只能更新 ${validFiles.join(", ")}`;
     }
@@ -547,7 +533,7 @@ ${this.identityCache!.rules}`;
   }
 }
 
-const identitySystem = new IdentitySystem(WORKDIR);
+const identitySystem = new IdentitySystem(IDENTITY_DIR);
 
 // ============================================================================
 // V7 新增: 分层记忆系统 - 日记本模式
@@ -734,22 +720,6 @@ const layeredMemory = new LayeredMemory(WORKDIR);
 // V8 新增: Heartbeat 系统 - 主动性与周期检查
 // ============================================================================
 
-const HEARTBEAT_TEMPLATE = `# HEARTBEAT.md - 心跳检查清单
-
-当收到心跳信号时，按此清单检查。如果没有需要处理的事项，回复 HEARTBEAT_OK。
-
-## 检查项（���需启用）
-# - [ ] 检查 memory/ 是否需要整理
-# - [ ] 检查 MEMORY.md 是否需要更新
-# - [ ] 检查是否有未完成的承诺
-# - [ ] 检查日历是否有即将到来的事件
-
-## 规则
-- 深夜 (23:00-08:00) 除非紧急否则不打扰
-- 刚检查过 (<30分钟) 不重复检查
-- 没有新情况时回复 HEARTBEAT_OK
-`;
-
 interface HeartbeatState {
   lastChecks: Record<string, number>;
   lastHeartbeat: number;
@@ -768,28 +738,15 @@ class HeartbeatSystem {
     this.state = this.loadState();
   }
 
-  // 初始化 HEARTBEAT.md
-  init(): string {
-    if (!fs.existsSync(this.heartbeatFile)) {
-      fs.writeFileSync(this.heartbeatFile, HEARTBEAT_TEMPLATE, "utf-8");
-      return "已创建 HEARTBEAT.md";
-    }
-    return "HEARTBEAT.md 已存在";
-  }
-
-  // 加载状态
   private loadState(): HeartbeatState {
     if (fs.existsSync(this.stateFile)) {
       try {
         return JSON.parse(fs.readFileSync(this.stateFile, "utf-8"));
-      } catch (e) {
-        // 文件损坏，重新创建
-      }
+      } catch (e) { /* 文件损坏，重新创建 */ }
     }
     return { lastChecks: {}, lastHeartbeat: 0 };
   }
 
-  // 保存状态
   private saveState() {
     const dir = path.dirname(this.stateFile);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -799,7 +756,7 @@ class HeartbeatSystem {
   // 读取心跳清单
   getChecklist(): string {
     if (!fs.existsSync(this.heartbeatFile)) {
-      return "HEARTBEAT.md 不存在，请先运行 heartbeat_init";
+      return "HEARTBEAT.md 不存在（这是正常的，可以创建一个来定义检查清单）";
     }
     return fs.readFileSync(this.heartbeatFile, "utf-8");
   }
@@ -818,64 +775,40 @@ class HeartbeatSystem {
     return `已记录检查: ${checkName}`;
   }
 
-  // 获取上次检查时间
-  getLastCheck(checkName: string): string {
-    const lastTime = this.state.lastChecks[checkName];
-    if (!lastTime) return `${checkName}: 从未检查`;
-    
-    const ago = Date.now() - lastTime;
-    const minutes = Math.floor(ago / 60000);
-    const hours = Math.floor(minutes / 60);
-    
-    if (hours > 0) return `${checkName}: ${hours} 小时前`;
-    return `${checkName}: ${minutes} 分钟前`;
-  }
-
-  // 获取所有检查状态
+  // 获取检查状态
   getStatus(): string {
     const lines = [`上次心跳: ${this.state.lastHeartbeat ? new Date(this.state.lastHeartbeat).toLocaleString("zh-CN") : "从未"}`];
-    
     for (const [name, time] of Object.entries(this.state.lastChecks)) {
-      const ago = Date.now() - time;
-      const minutes = Math.floor(ago / 60000);
-      lines.push(`- ${name}: ${minutes} 分钟前`);
+      const ago = Math.floor((Date.now() - time) / 60000);
+      lines.push(`- ${name}: ${ago} 分钟前`);
     }
-    
     return lines.join("\n");
   }
 
   // 判断是否应该打扰用户
   shouldDisturb(): boolean {
     const hour = new Date().getHours();
-    // 深夜不打扰
-    if (hour >= 23 || hour < 8) return false;
-    return true;
+    return !(hour >= 23 || hour < 8); // 深夜不打扰
   }
 
   // 判断是否需要检查某项
   needsCheck(checkName: string, intervalMinutes: number = 30): boolean {
     const lastTime = this.state.lastChecks[checkName] || 0;
-    const elapsed = (Date.now() - lastTime) / 60000;
-    return elapsed >= intervalMinutes;
+    return (Date.now() - lastTime) / 60000 >= intervalMinutes;
   }
 
-  // 执行心跳（返回需要处理的事项或 HEARTBEAT_OK）
+  // 执行心跳
   runHeartbeat(): string {
     if (!this.shouldDisturb()) {
       return "HEARTBEAT_OK (深夜静默)";
     }
-
     const checklist = this.getChecklist();
-    const enabledChecks = checklist.match(/^- \[ \] .+/gm) || [];
-    
-    if (enabledChecks.length === 0) {
-      return "HEARTBEAT_OK (无启用的检查项)";
+    if (checklist.includes("不存在")) {
+      return "HEARTBEAT_OK (无检查清单)";
     }
-
     this.state.lastHeartbeat = Date.now();
     this.saveState();
-
-    return `心跳触发，请检查以下事项:\n${enabledChecks.join("\n")}\n\n如果没有需要处理的，回复 HEARTBEAT_OK`;
+    return `心跳触发，请检查 HEARTBEAT.md 中的事项。如果没有需要处理的，回复 HEARTBEAT_OK`;
   }
 }
 
@@ -891,27 +824,32 @@ const BASE_SYSTEM = `你是 OpenClaw V8 - 有主动性的 Agent。
 heartbeat -> recall -> identify -> plan -> (load skill) -> (delegate -> collect) -> execute -> track -> remember
 
 ## 心跳系统 (V8 核心)
-工具: heartbeat_check, heartbeat_record
+工具: heartbeat_get, heartbeat_update, heartbeat_record, heartbeat_status, heartbeat_run
+- 收到心跳信号时，读取 HEARTBEAT.md 检查清单
+- 深夜 23:00-08:00 静默，有重要事项才通知
+- 用 heartbeat_record 记录检查完成时间
+
+## 分层记忆系统 (继承 V7)
+工具: daily_write, daily_read, daily_recent, longterm_read, longterm_append, memory_search_all
 
 时间感知:
 ${layeredMemory.getTimeContext()}
 
-心跳机制:
-- HEARTBEAT.md: 定义周期性检查清单
-- heartbeat_check: 读取检查清单
-- heartbeat_record: 记录检查时间，避免重复
-
-心跳策略:
-- 收到心跳信号时，读取 HEARTBEAT.md 检查清单
-- 执行检查但不打扰用户（深夜 22:00-08:00 静默）
-- 有重要事项时主动通知，否则回复 HEARTBEAT_OK
-- 使用 heartbeat_record 记录检查时间
-
-## 分层记忆系统 (继承 V7)
-工具: daily_write, daily_read, daily_recent, longterm_read, longterm_append, memory_search_all
-- 日记 (daily_*): 每日原始记录
+记忆分层:
+- 日记 (daily_*): 每日原始记录，用于工作记忆
+  - daily_write: 记录今天发生的事
+  - daily_read: 读取某天的日记
+  - daily_recent: 读取最近几天
 - 长期记忆 (longterm_*): 精炼的重要信息
-- memory_search_all: 搜索所有记忆
+  - longterm_read: 读取 MEMORY.md
+  - longterm_append: 追加到某个分类
+- memory_search_all: 搜索所有记忆（日记+长期）
+
+记忆策略:
+- 会话开始时先 recall（读取最近日记+长期记忆）
+- 重要信息用 longterm_append 归档
+- 日常记录用 daily_write 写入
+- 跨时间查询用 memory_search_all
 
 ## 身份系统 (继承 V6)
 工具: identity_init, identity_load, identity_update, identity_get
@@ -1053,7 +991,7 @@ const TOOLS: Anthropic.Tool[] = [
     input_schema: {
       type: "object" as const,
       properties: {
-        file: { type: "string" as const, enum: ["IDENTITY.md", "SOUL.md", "USER.md"], description: "要更新的文件" },
+        file: { type: "string" as const, enum: ["IDENTITY.md", "SOUL.md", "USER.md", "HEARTBEAT.md", "TOOLS.md"], description: "要更新的文件" },
         content: { type: "string" as const, description: "新内容" }
       },
       required: ["file", "content"]
@@ -1119,13 +1057,8 @@ const TOOLS: Anthropic.Tool[] = [
   },
   // V8 新增: 心跳工具
   {
-    name: "heartbeat_init",
-    description: "初始化 HEARTBEAT.md 检查清单",
-    input_schema: { type: "object" as const, properties: {} }
-  },
-  {
     name: "heartbeat_get",
-    description: "读取心跳检查清单",
+    description: "读取心跳检查清单 (HEARTBEAT.md)",
     input_schema: { type: "object" as const, properties: {} }
   },
   {
@@ -1136,7 +1069,7 @@ const TOOLS: Anthropic.Tool[] = [
   {
     name: "heartbeat_record",
     description: "记录某项检查的完成时间",
-    input_schema: { type: "object" as const, properties: { check_name: { type: "string" as const, description: "检查项名称" } }, required: ["check_name"] }
+    input_schema: { type: "object" as const, properties: { check_name: { type: "string" as const } }, required: ["check_name"] }
   },
   {
     name: "heartbeat_status",
@@ -1270,12 +1203,24 @@ async function chat(prompt: string, history: Anthropic.MessageParam[] = []): Pro
   history.push({ role: "user", content: prompt });
 
   while (true) {
-    const response = await client.messages.create({
+    // 构建请求
+    const request = {
       model: MODEL,
-      messages: [{ role: "system", content: identitySystem.getEnhancedSystemPrompt(BASE_SYSTEM) }, ...history],
+      system: [{ type: "text", text: identitySystem.getEnhancedSystemPrompt(BASE_SYSTEM) }],
+      messages: history,
       tools: TOOLS,
       max_tokens: 8000
-    } as any);
+    };
+
+    // 记录请求日志
+    const logDir = path.join(WORKDIR, "logs");
+    if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const logFile = path.join(logDir, `request-${timestamp}.json`);
+    fs.writeFileSync(logFile, JSON.stringify(request, null, 2));
+    console.log(`\x1b[90m[LOG] ${logFile}\x1b[0m`);
+
+    const response = await client.messages.create(request as any);
 
     const content: Anthropic.ContentBlockParam[] = response.content.map(block => {
       if (block.type === "text") {
@@ -1336,7 +1281,6 @@ async function chat(prompt: string, history: Anthropic.MessageParam[] = []): Pro
           case "memory_search_all": output = layeredMemory.searchAllMemory(args.query); break;
           case "time_context": output = layeredMemory.getTimeContext(); break;
           // V8 新增: 心跳工具
-          case "heartbeat_init": output = heartbeatSystem.init(); break;
           case "heartbeat_get": output = heartbeatSystem.getChecklist(); break;
           case "heartbeat_update": output = heartbeatSystem.updateChecklist(args.content); break;
           case "heartbeat_record": output = heartbeatSystem.recordCheck(args.check_name); break;
@@ -1358,26 +1302,62 @@ async function chat(prompt: string, history: Anthropic.MessageParam[] = []): Pro
 // 主入口
 // ============================================================================
 
-// V8: 启动时初始化所有系统
+// V7: 启动时初始化并显示时间上下文
 console.log(identitySystem.initWorkspace());
 console.log(identitySystem.loadIdentity());
-console.log(heartbeatSystem.init());
 console.log(layeredMemory.getTimeContext());
 
 if (process.argv[2]) {
+  // 单次执行模式
   chat(process.argv[2]).then(console.log).catch(console.error);
 } else {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  // 交互式 REPL 模式
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    terminal: true
+  });
   const history: Anthropic.MessageParam[] = [];
 
-  const ask = () => rl.question("\x1b[36m>> \x1b[0m", async (q) => {
-    if (q === "q" || q === "exit" || q === "quit") return rl.close();
-    if (q === "") { ask(); return; }  // 空输入继续等待
-    try { console.log(await chat(q, history)); } catch (e: any) { console.error(`\x1b[31m错误: ${e.message}\x1b[0m`); }
-    ask();
+  console.log(`\nOpenClaw V8 - 心跳主动性 Agent (${identitySystem.getName()})`);
+  console.log(`${memory.stats()} | Skill: ${skillLoader.count} 个 | Heartbeat: 就绪`);
+  console.log(`输入 'q' 或 'exit' 退出，空行继续等待输入\n`);
+
+  const prompt = () => {
+    rl.question("\x1b[36m>> \x1b[0m", async (input) => {
+      const q = input.trim();
+
+      // 只有明确退出命令才退出
+      if (q === "q" || q === "exit" || q === "quit") {
+        console.log("再见！");
+        rl.close();
+        return;
+      }
+
+      // 空输入：继续等待
+      if (q === "") {
+        prompt();
+        return;
+      }
+
+      // 处理用户输入
+      try {
+        const response = await chat(q, history);
+        console.log(response);
+      } catch (e: any) {
+        console.error(`\x1b[31m错误: ${e.message}\x1b[0m`);
+      }
+
+      // 继续下一轮
+      prompt();
+    });
+  };
+
+  // 处理 Ctrl+C
+  rl.on("close", () => {
+    process.exit(0);
   });
 
-  console.log(`\nOpenClaw V8 - 有主动性的 Agent (${identitySystem.getName()}) - 输入 'q' 退出`);
-  console.log(`${memory.stats()} | Skill: ${skillLoader.count} 个 | Heartbeat: 已就绪`);
-  ask();
+  // 启动 REPL
+  prompt();
 }
