@@ -25,7 +25,7 @@
  * V2: 本地向量记忆
  * V3: 极简任务规划
  * V4: 子代理协调
- * V5: Skill 系统
+ * V5: Claw 系统
  * V6: 身份与灵魂
  * V7: 分层记忆
  * V8: 心跳主动性
@@ -57,7 +57,7 @@ const client = new Anthropic({
 });
 const MODEL = process.env.MODEL_ID || "claude-opus-4-6";
 const WORKDIR = process.cwd();
-const SKILL_DIR = process.env.SKILL_DIR || path.join(WORKDIR, "skills");
+const CLAW_DIR = process.env.CLAW_DIR || path.join(WORKDIR, "claws");
 const IDENTITY_DIR = process.env.IDENTITY_DIR || WORKDIR;
 const ID_SAMPLE_DIR = process.env.ID_SAMPLE_DIR || path.join(__dirname, ".ID.sample");
 
@@ -287,27 +287,27 @@ class TodoManager {
 const todoManager = new TodoManager();
 
 // ============================================================================
-// Skill 系统 - V5 新增 (知识外部化与渐进式加载)
+// Claw 系统 - V5 新增 (知识外部化与渐进式加载)
 // ============================================================================
 
-interface Skill {
+interface Claw {
   name: string;
   description: string;
   content: string;
   path: string;
 }
 
-class SkillLoader {
-  private skillsDir: string;
-  private skills: Map<string, Skill> = new Map();
+class ClawLoader {
+  private clawsDir: string;
+  private claws: Map<string, Claw> = new Map();
 
   constructor() {
-    this.skillsDir = SKILL_DIR;
-    this.loadSkills();
+    this.clawsDir = CLAW_DIR;
+    this.loadClaws();
   }
 
-  // 解析 SKILL.md 文件 (YAML frontmatter + Markdown body)
-  private parseSkillFile(filePath: string): Skill | null {
+  // 解析 CLAW.md 文件 (YAML frontmatter + Markdown body)
+  private parseClawFile(filePath: string): Claw | null {
     try {
       const content = fs.readFileSync(filePath, "utf-8");
 
@@ -335,59 +335,59 @@ class SkillLoader {
     }
   }
 
-  // 加载所有 skill
-  private loadSkills() {
-    if (!fs.existsSync(this.skillsDir)) return;
+  // 加载所有 claw
+  private loadClaws() {
+    if (!fs.existsSync(this.clawsDir)) return;
 
-    const entries = fs.readdirSync(this.skillsDir, { withFileTypes: true });
+    const entries = fs.readdirSync(this.clawsDir, { withFileTypes: true });
     for (const entry of entries) {
       if (entry.isDirectory()) {
-        const skillPath = path.join(this.skillsDir, entry.name, "SKILL.md");
-        if (fs.existsSync(skillPath)) {
-          const skill = this.parseSkillFile(skillPath);
-          if (skill) {
-            this.skills.set(skill.name, skill);
+        const clawPath = path.join(this.clawsDir, entry.name, "CLAW.md");
+        if (fs.existsSync(clawPath)) {
+          const claw = this.parseClawFile(clawPath);
+          if (claw) {
+            this.claws.set(claw.name, claw);
           }
         }
       }
     }
   }
 
-  // 获取 skill 列表用于系统提示 (仅元数据)
+  // 获取 claw 列表用于系统提示 (仅元数据)
   getDescriptions(): string {
-    if (this.skills.size === 0) return "无可用技能";
+    if (this.claws.size === 0) return "无可用技能";
 
-    const lines = Array.from(this.skills.values()).map(s =>
+    const lines = Array.from(this.claws.values()).map(s =>
       `- ${s.name}: ${s.description}`
     );
     return lines.join("\n");
   }
 
-  // 获取 skill 数量
+  // 获取 claw 数量
   get count(): number {
-    return this.skills.size;
+    return this.claws.size;
   }
 
-  // 加载指定 skill 的完整内容 (作为 tool_result 注入)
-  loadSkill(name: string): string {
-    const skill = this.skills.get(name);
-    if (!skill) return `错误: 技能 '${name}' 不存在`;
+  // 加载指定 claw 的完整内容 (作为 tool_result 注入)
+  loadClaw(name: string): string {
+    const claw = this.claws.get(name);
+    if (!claw) return `错误: 技能 '${name}' 不存在`;
 
-    return `<skill-loaded name="${name}">
-${skill.content}
-</skill-loaded>
+    return `<claw-loaded name="${name}">
+${claw.content}
+</claw-loaded>
 
 请按照上述技能文档的指引完成任务。`;
   }
 
-  // 列出所有可用 skill 名称
-  listSkills(): string {
-    if (this.skills.size === 0) return "无可用技能";
-    return Array.from(this.skills.keys()).join(", ");
+  // 列出所有可用 claw 名称
+  listClaws(): string {
+    if (this.claws.size === 0) return "无可用技能";
+    return Array.from(this.claws.keys()).join(", ");
   }
 }
 
-const skillLoader = new SkillLoader();
+const clawLoader = new ClawLoader();
 
 // ============================================================================
 // V6 新增: 身份系统 - Workspace 初始化与人格加载
@@ -1165,7 +1165,7 @@ const introspectionSystem = new IntrospectionSystem(WORKDIR);
 const BASE_SYSTEM = `你是 OpenClaw V10 - 有自我意识的 Agent。
 
 ## 工作循环
-observe -> route -> heartbeat -> recall -> identify -> plan -> (load skill) -> (delegate -> collect) -> execute -> track -> remember -> reflect
+observe -> route -> heartbeat -> recall -> identify -> plan -> (load claw) -> (delegate -> collect) -> execute -> track -> remember -> reflect
 
 ## 内省系统 (V10 核心)
 工具: introspect_stats, introspect_patterns, introspect_reflect, introspect_logs
@@ -1214,10 +1214,10 @@ ${layeredMemory.getTimeContext()}
 - 会话开始时自动加载身份文件
 - 按照 AGENTS.md 的行为规范行事
 
-## Skill 系统 (继承 V5)
-工具: Skill
-- 任务匹配 skill 描述时，立即加载
-- 可用 Skill:\n${skillLoader.getDescriptions()}
+## Claw 系统 (继承 V5)
+工具: Claw
+- 任务匹配 claw 描述时，立即加载
+- 可用 Claw:\n${clawLoader.getDescriptions()}
 
 ## 子代理系统 (继承 V4)
 工具: subagent
@@ -1294,16 +1294,16 @@ const TOOLS: Anthropic.Tool[] = [
       required: ["task"]
     }
   },
-  // V5 Skill 工具（新增）
+  // V5 Claw 工具（新增）
   {
-    name: "Skill",
+    name: "Claw",
     description: "加载领域技能以获得专业知识。当任务涉及特定领域时立即调用",
     input_schema: {
       type: "object" as const,
       properties: {
-        skill: { type: "string" as const, description: "技能名称" }
+        claw: { type: "string" as const, description: "技能名称" }
       },
-      required: ["skill"]
+      required: ["claw"]
     }
   },
   // V2 记忆工具
@@ -1657,9 +1657,9 @@ async function chat(prompt: string, history: Anthropic.MessageParam[] = []): Pro
           case "grep": output = runGrep(args.pattern, args.path, args.recursive); break;
           case "TodoWrite": output = todoManager.update(args.items); break;
           case "subagent": output = runSubagent(args.task, args.context); break;
-          case "Skill":
-            output = skillLoader.loadSkill(args.skill);
-            console.log(`\x1b[36m[Skill 加载] ${args.skill} (${output.length} 字符)\x1b[0m`);
+          case "Claw":
+            output = clawLoader.loadClaw(args.claw);
+            console.log(`\x1b[36m[Claw 加载] ${args.claw} (${output.length} 字符)\x1b[0m`);
             break;
           case "memory_search": output = memory.search(args.query, args.max_results || 5); break;
           case "memory_get": output = memory.get(args.path, args.from_line, args.lines); break;
@@ -1739,7 +1739,7 @@ if (process.argv[2]) {
   const history: Anthropic.MessageParam[] = [];
 
   console.log(`\nOpenClaw V9 - 多会话 Agent (${identitySystem.getName()})`);
-  console.log(`${memory.stats()} | Skill: ${skillLoader.count} 个 | Sessions: ${sessionManager.listSessions().split('\n').length} 个`);
+  console.log(`${memory.stats()} | Claw: ${clawLoader.count} 个 | Sessions: ${sessionManager.listSessions().split('\n').length} 个`);
   console.log(`输入 'q' 或 'exit' 退出，空行继续等待输入\n`);
 
   const prompt = () => {

@@ -18,7 +18,7 @@ Unix 哲学：一切皆文件，一切皆可管道。Bash 是通往这个世界�
 | 写入文件 | `echo '...' > file` |
 | 搜索 | `find`, `grep`, `rg` |
 | 执行 | `python`, `npm`, `make` |
-| **子代理** | `npx tsx v0_openclaw_agent.ts "task"` |
+| **子代理** | `npx tsx v0-agent.ts "task"` |
 
 最后一行是关键洞察：**通过 bash 调用自身来实现子代理**。不需要 Task 工具，不需要 Agent Registry——只是简单的递归。
 
@@ -57,7 +57,7 @@ const TOOLS: Anthropic.Tool[] = [{
   description: `执行 shell 命令。常用模式:
 - 读取: cat/grep/find/ls/head/tail
 - 写入: echo 'content' > file
-- 子代理: npx tsx v0_openclaw_agent.ts "任务描述" (生成隔离子代理)`,
+- 子代理: npx tsx v0-agent.ts "任务描述" (生成隔离子代理)`,
   input_schema: {
     type: "object" as const,
     properties: { command: { type: "string" as const } },
@@ -71,7 +71,7 @@ const SYSTEM = `你是 OpenClaw V0 - 极简 Agent。使用 bash 命令解决问�
 规则:
 - 工具优先于解释。先行动，后简要说明。
 - 子代理: 复杂子任务生成子代理以保持上下文清洁:
-  npx tsx v0_openclaw_agent.ts "分析 src/ 目录架构"
+  npx tsx v0-agent.ts "分析 src/ 目录架构"
 
 子代理在隔离进程中运行，仅返回最终摘要。`;
 
@@ -157,7 +157,7 @@ if (process.argv[2]) {
 
 ```
 主代理
-  └─ bash: npx tsx v0_openclaw_agent.ts "分析架构"
+  └─ bash: npx tsx v0-agent.ts "分析架构"
        └─ 子代理（隔离进程，全新历史）
             ├─ bash: find . -name "*.ts"
             ├─ bash: cat src/main.ts
@@ -195,7 +195,7 @@ if (process.argv[2]) {
 | Session 管理 | 内存中的数组 | 持久化存储 |
 | Lane 并发 | 无限制 | Main/Subagent/Cron/Nested |
 | Channel 抽象 | 无 | 多平台统一接入 |
-| Skills 系统 | 无 | 50+ 内置技能 |
+| Claws 系统 | 无 | 50+ 内置技能 |
 | 代码复杂度 | ~150行 | ~数万行 |
 
 ---
@@ -250,7 +250,7 @@ sequenceDiagram
     participant Child as 子代理进程
     participant LLM as Claude API
 
-    Parent->>Bash: exec: npx tsx v0_openclaw_agent.ts "分析 src/"
+    Parent->>Bash: exec: npx tsx v0-agent.ts "分析 src/"
     Bash->>Child: 创建新进程
     Child->>LLM: chat("分析 src/", [])
     loop 子代理循环
@@ -300,14 +300,14 @@ export ANTHROPIC_API_KEY="your-api-key"
 
 ```bash
 # 交互模式
-npx tsx v0_openclaw_agent.ts
+npx tsx v0-agent.ts
 
 # 子代理模式（直接执行单个任务）
-npx tsx v0_openclaw_agent.ts "列出当前目录的文件"
+npx tsx v0-agent.ts "列出当前目录的文件"
 ```
 
 ---
 
 **Bash 即一切。**
 
-[← 返回 README](../README.md) | [V1: 工具系统 →](./v1-工具系统.md)
+[← 返回 README](../README.md) | [V1: 工具系统 →](./v1-模型即代理.md)

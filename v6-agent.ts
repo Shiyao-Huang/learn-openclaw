@@ -1,28 +1,24 @@
 #!/usr/bin/env tsx
 /**
- * v6-agent.ts - 身份与灵魂 (~850行)
+ * v6-agent.ts - 身份系统 (~930行)
  *
- * 核心哲学: "Agent 不只是工具，是有身份的存在"
- * ================================================
- * V6 在 V5 基础上增加身份系统：
- * - Workspace 初始化: 自动创建人格文件
- * - 身份加载: 会话启动时读取 SOUL.md/IDENTITY.md/USER.md
- * - 行为规范: 按 AGENTS.md 行事
- *
- * 人格文件:
- * - AGENTS.md: 行为规范（每次会话必读）
- * - SOUL.md: 性格价值观
- * - IDENTITY.md: 名字角色
- * - USER.md: 用户画像
+ * 核心哲学: "人格即配置"
+ * ===================================================
+ * V6 在 V5.5 基础上增加身份系统：
+ * - 人格文件: AGENTS.md/SOUL.md/IDENTITY.md/USER.md
+ * - Workspace 初始化: 从 .ID.sample 复制模板
+ * - Soul Switch: 通过 Hook 动态切换人格
+ * - 身份更新: identity_update 工具
  *
  * 演进路线:
  * V0: bash 即一切
  * V1: 5个基础工具
  * V2: 本地向量记忆
- * V3: 极简任务规划
+ * V3: 任务规划系统
  * V4: 子代理协调
  * V5: Skill 系统
- * V6: 身份与灵魂 (当前)
+ * V5.5: Hook 基础设施
+ * V6: 身份系统 (当前) - 在 V5.5 基础上增加 IdentitySystem
  */
 
 import Anthropic from "@anthropic-ai/sdk";
@@ -47,14 +43,38 @@ const client = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
   baseURL: process.env.ANTHROPIC_BASE_URL
 });
-const MODEL = process.env.MODEL_ID || "claude-opus-4-6";
+const MODEL = process.env.MODEL_ID || "claude-sonnet-4-20250514";
 const WORKDIR = process.cwd();
 const SKILL_DIR = process.env.SKILL_DIR || path.join(WORKDIR, "skills");
-const IDENTITY_DIR = process.env.IDENTITY_DIR || WORKDIR;
 const ID_SAMPLE_DIR = process.env.ID_SAMPLE_DIR || path.join(__dirname, ".ID.sample");
 
+// 智能 workspace 检测：优先使用环境变量，否则检查当前目录是否已有身份文件
+function detectWorkspace(): string {
+  // 1. 环境变量优先
+  if (process.env.IDENTITY_DIR) {
+    return process.env.IDENTITY_DIR;
+  }
+
+  // 2. 检查当前目录是否已有 IDENTITY.md（说明这是一个已初始化的 workspace）
+  const currentIdentity = path.join(WORKDIR, "IDENTITY.md");
+  if (fs.existsSync(currentIdentity)) {
+    return WORKDIR;
+  }
+
+  // 3. 检查是否有 .workspace 子目录（约定的 workspace 位置）
+  const workspaceDir = path.join(WORKDIR, ".workspace");
+  if (fs.existsSync(workspaceDir)) {
+    return workspaceDir;
+  }
+
+  // 4. 默认在当前目录创建（首次运行）
+  return WORKDIR;
+}
+
+const IDENTITY_DIR = detectWorkspace();
+
 // ============================================================================
-// 本地向量记忆系统 - 零外部依赖
+// V2: 本地向量记忆系统（保留）
 // ============================================================================
 
 interface MemoryDoc {
@@ -76,7 +96,6 @@ class LocalMemory {
     this.load();
   }
 
-  // Jaccard 相似度 - 对中文更友好
   private jaccardSimilarity(a: string, b: string): number {
     const setA = new Set(a.toLowerCase());
     const setB = new Set(b.toLowerCase());
@@ -85,716 +104,142 @@ class LocalMemory {
     return intersection.size / union.size;
   }
 
-  // 加载索引
   private load() {
     if (fs.existsSync(this.indexFile)) {
       try {
         const data = JSON.parse(fs.readFileSync(this.indexFile, "utf-8"));
-        for (const doc of data.docs || []) {
-          this.docs.set(doc.id, doc);
-        }
-      } catch (e) {
-        console.log("\x1b[33m警告: 索引文件损坏，重新创建\x1b[0m");
-      }
+        for (const doc of data.docs || []) this.docs.set(doc.id, doc);
+      } catch (e) {}
     }
   }
 
-  // 保存索引
   private save() {
-    if (!fs.existsSync(this.memoryDir)) {
-      fs.mkdirSync(this.memoryDir, { recursive: true });
-    }
-    const data = { docs: Array.from(this.docs.values()), updated: Date.now() };
-    fs.writeFileSync(this.indexFile, JSON.stringify(data, null, 2));
+    if (!fs.existsSync(this.memoryDir)) fs.mkdirSync(this.memoryDir, { recursive: true });
+    fs.writeFileSync(this.indexFile, JSON.stringify({ docs: Array.from(this.docs.values()) }, null, 2));
   }
 
-  // 文本分块
-  private chunkText(text: string, size: number = 500): string[] {
-    const chunks: string[] = [];
-    const paragraphs = text.split(/\n\n+/);
-    let current = "";
-
-    for (const para of paragraphs) {
-      if (current.length + para.length > size) {
-        if (current) chunks.push(current.trim());
-        current = para;
-      } else {
-        current += "\n\n" + para;
-      }
-    }
-    if (current) chunks.push(current.trim());
-    return chunks;
-  }
-
-  // 摄入文件
   ingestFile(filePath: string): string {
     const fullPath = path.resolve(filePath);
-    if (!fs.existsSync(fullPath)) return `错误: 文件不存在 ${filePath}`;
-
+    if (!fs.existsSync(fullPath)) return `错误: 文件不存在`;
     const content = fs.readFileSync(fullPath, "utf-8");
     const chunks = content.split(/\n\n+/).filter(c => c.trim());
     let added = 0;
-
     for (let i = 0; i < chunks.length; i++) {
       const id = createHash("md5").update(`${fullPath}:${i}:${chunks[i]}`).digest("hex");
       if (!this.docs.has(id)) {
-        this.docs.set(id, {
-          id,
-          content: chunks[i],
-          source: path.relative(WORKDIR, fullPath),
-          chunk: i,
-          timestamp: Date.now()
-        });
+        this.docs.set(id, { id, content: chunks[i], source: path.relative(WORKDIR, fullPath), chunk: i, timestamp: Date.now() });
         added++;
       }
     }
-
     this.save();
-    return `已摄入: ${filePath} (${added} 新块, 共 ${chunks.length} 块)`;
+    return `已摄入: ${path.basename(filePath)} (${added} 块)`;
   }
 
-  // 摄入目录
-  ingestDirectory(dir: string): string {
-    const fullDir = path.resolve(dir);
-    if (!fs.existsSync(fullDir)) return `错误: 目录不存在 ${dir}`;
-
-    const files = fs.readdirSync(fullDir)
-      .filter(f => f.endsWith(".md") && !f.startsWith("."))
-      .map(f => path.join(fullDir, f));
-
-    let total = 0;
-    for (const file of files) {
-      const result = this.ingestFile(file);
-      if (result.includes("已摄入")) total++;
-    }
-    return `已摄入 ${total} 个文件到记忆库`;
-  }
-
-  // 语义搜索 - 使用 Jaccard 相似度
-  search(query: string, maxResults: number = 5): string {
+  search(query: string, maxResults = 5): string {
     if (this.docs.size === 0) return "记忆库为空";
-
     const results = Array.from(this.docs.values())
-      .map(doc => ({
-        doc,
-        score: this.jaccardSimilarity(query, doc.content)
-      }))
+      .map(doc => ({ doc, score: this.jaccardSimilarity(query, doc.content) }))
       .sort((a, b) => b.score - a.score)
-      .slice(0, maxResults);
-
-    if (results.length === 0 || results[0].score < 0.01) {
-      return "未找到相关记忆";
-    }
-
-    return results
-      .map(({ doc, score }) => `[${doc.source}:${doc.chunk}] (相似度: ${(score * 100).toFixed(1)}%)\n${doc.content.slice(0, 200)}...`)
-      .join("\n\n");
+      .slice(0, maxResults)
+      .filter(r => r.score > 0.01);
+    if (results.length === 0) return "未找到相关记忆";
+    return results.map(({ doc, score }) =>
+      `[${doc.source}:${doc.chunk}] (${(score * 100).toFixed(0)}%) ${doc.content.slice(0, 100)}...`
+    ).join("\n");
   }
 
-  // 读取原始文件
-  get(filePath: string, fromLine?: number, lines?: number): string {
+  get(filePath: string): string {
     const fullPath = path.join(this.memoryDir, filePath);
-    if (!fs.existsSync(fullPath)) return `错误: 文件不存在 ${filePath}`;
-
-    let content = fs.readFileSync(fullPath, "utf-8");
-    if (fromLine !== undefined) {
-      const allLines = content.split("\n");
-      const start = fromLine - 1;
-      const end = lines ? start + lines : allLines.length;
-      content = allLines.slice(start, end).join("\n");
-    }
-    return content;
+    return fs.existsSync(fullPath) ? fs.readFileSync(fullPath, "utf-8") : `错误: 文件不存在`;
   }
 
-  // 追加到记忆文件
   append(filePath: string, content: string): string {
     const fullPath = path.join(this.memoryDir, filePath);
     const dir = path.dirname(fullPath);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-
-    const timestamp = new Date().toISOString();
-    const entry = `\n## ${timestamp}\n\n${content}\n`;
-    fs.appendFileSync(fullPath, entry, "utf-8");
-
-    // 自动重新摄入
+    fs.appendFileSync(fullPath, `\n## ${new Date().toISOString()}\n\n${content}\n`);
     this.ingestFile(fullPath);
-    return `已追加到: ${filePath}`;
+    return `已追加: ${filePath}`;
   }
 
-  // 统计信息
-  stats(): string {
-    return `记忆库: ${this.docs.size} 个片段`;
-  }
+  stats(): string { return `记忆库: ${this.docs.size} 个片段`; }
 }
 
 const memory = new LocalMemory();
 
 // ============================================================================
-// 任务管理系统 - V3 新增 (奥卡姆剃刀: 仅一个 TodoWrite 工具)
+// V3: 任务规划系统（简化设计）
 // ============================================================================
 
-interface Todo {
+type TodoStatus = "pending" | "in_progress" | "completed";
+
+interface TodoItem {
   content: string;
-  status: "pending" | "in_progress" | "completed";
+  status: TodoStatus;
   activeForm: string;
 }
 
 class TodoManager {
-  private todos: Todo[] = [];
+  private items: TodoItem[] = [];
 
-  update(items: Todo[]): string {
-    // 验证规则
-    const inProgressCount = items.filter(t => t.status === "in_progress").length;
-    if (inProgressCount > 1) {
-      return `错误: 只能有 1 个 in_progress 任务，当前有 ${inProgressCount} 个`;
-    }
-    if (items.length > 20) {
-      return `错误: 最多 20 个任务，当前有 ${items.length} 个`;
+  update(newItems: TodoItem[]): string {
+    let inProgressCount = 0;
+    const validated: TodoItem[] = [];
+
+    for (let i = 0; i < newItems.length; i++) {
+      const item = newItems[i];
+      const content = (item.content || "").trim();
+      const status = (item.status || "pending") as TodoStatus;
+      const activeForm = (item.activeForm || "").trim();
+
+      if (!content) throw new Error(`Item ${i}: content 必填`);
+      if (!["pending", "in_progress", "completed"].includes(status)) {
+        throw new Error(`Item ${i}: 无效状态 '${status}'`);
+      }
+      if (status === "in_progress" && !activeForm) {
+        throw new Error(`Item ${i}: in_progress 状态必须提供 activeForm`);
+      }
+
+      if (status === "in_progress") inProgressCount++;
+      validated.push({ content, status, activeForm });
     }
 
-    this.todos = items;
-    return this.format();
+    if (validated.length > 20) throw new Error("最多 20 个任务");
+    if (inProgressCount > 1) throw new Error("只能有 1 个 in_progress 任务");
+
+    this.items = validated;
+    return this.render();
   }
 
-  private format(): string {
-    if (this.todos.length === 0) return "暂无任务";
-
-    const lines = this.todos.map((t, i) => {
-      const icon = t.status === "completed" ? "✓" : t.status === "in_progress" ? "▶" : "○";
-      return `${i + 1}. [${icon}] ${t.content}`;
-    });
-
-    const pending = this.todos.filter(t => t.status === "pending").length;
-    const inProgress = this.todos.filter(t => t.status === "in_progress").length;
-    const completed = this.todos.filter(t => t.status === "completed").length;
-
-    return lines.join("\n") + `\n\n总计: ${this.todos.length} | 待办: ${pending} | 进行中: ${inProgress} | 完成: ${completed}`;
+  render(): string {
+    if (this.items.length === 0) return "暂无任务";
+    const lines: string[] = [];
+    for (const item of this.items) {
+      if (item.status === "completed") lines.push(`[x] ${item.content}`);
+      else if (item.status === "in_progress") lines.push(`[>] ${item.content} <- ${item.activeForm}`);
+      else lines.push(`[ ] ${item.content}`);
+    }
+    const completed = this.items.filter(t => t.status === "completed").length;
+    lines.push(`\n(${completed}/${this.items.length} 已完成)`);
+    return lines.join("\n");
   }
 
-  getCurrent(): string {
-    return this.format();
+  stats(): string {
+    const completed = this.items.filter(t => t.status === "completed").length;
+    return `任务: ${completed}/${this.items.length}`;
   }
 }
 
 const todoManager = new TodoManager();
 
 // ============================================================================
-// Skill 系统 - V5 新增 (知识外部化与渐进式加载)
+// V4: 子代理系统（保留）
 // ============================================================================
 
-interface Skill {
-  name: string;
-  description: string;
-  content: string;
-  path: string;
-}
-
-class SkillLoader {
-  private skillsDir: string;
-  private skills: Map<string, Skill> = new Map();
-
-  constructor() {
-    this.skillsDir = SKILL_DIR;
-    this.loadSkills();
-  }
-
-  // 解析 SKILL.md 文件 (YAML frontmatter + Markdown body)
-  private parseSkillFile(filePath: string): Skill | null {
-    try {
-      const content = fs.readFileSync(filePath, "utf-8");
-
-      // 匹配 ---\nYAML\n---\nMarkdown 格式
-      const match = content.match(/^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/);
-      if (!match) return null;
-
-      const yamlContent = match[1];
-      const markdownContent = match[2].trim();
-
-      // 简单 YAML 解析 (只处理 name 和 description)
-      const name = yamlContent.match(/name:\s*(.+)/)?.[1]?.trim();
-      const description = yamlContent.match(/description:\s*(.+)/)?.[1]?.trim();
-
-      if (!name || !description) return null;
-
-      return {
-        name,
-        description,
-        content: markdownContent,
-        path: filePath
-      };
-    } catch (e) {
-      return null;
-    }
-  }
-
-  // 加载所有 skill
-  private loadSkills() {
-    if (!fs.existsSync(this.skillsDir)) return;
-
-    const entries = fs.readdirSync(this.skillsDir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.isDirectory()) {
-        const skillPath = path.join(this.skillsDir, entry.name, "SKILL.md");
-        if (fs.existsSync(skillPath)) {
-          const skill = this.parseSkillFile(skillPath);
-          if (skill) {
-            this.skills.set(skill.name, skill);
-          }
-        }
-      }
-    }
-  }
-
-  // 获取 skill 列表用于系统提示 (仅元数据)
-  getDescriptions(): string {
-    if (this.skills.size === 0) return "无可用技能";
-
-    const lines = Array.from(this.skills.values()).map(s =>
-      `- ${s.name}: ${s.description}`
-    );
-    return lines.join("\n");
-  }
-
-  // 获取 skill 数量
-  get count(): number {
-    return this.skills.size;
-  }
-
-  // 加载指定 skill 的完整内容 (作为 tool_result 注入)
-  loadSkill(name: string): string {
-    const skill = this.skills.get(name);
-    if (!skill) return `错误: 技能 '${name}' 不存在`;
-
-    return `<skill-loaded name="${name}">
-${skill.content}
-</skill-loaded>
-
-请按照上述技能文档的指引完成任务。`;
-  }
-
-  // 列出所有可用 skill 名称
-  listSkills(): string {
-    if (this.skills.size === 0) return "无可用技能";
-    return Array.from(this.skills.keys()).join(", ");
-  }
-}
-
-const skillLoader = new SkillLoader();
-
-// ============================================================================
-// V6 新增: 身份系统 - Workspace 初始化与人格加载
-// ============================================================================
-
-// 人格文件列表（从 .ID.sample 目录复制）
-const PERSONA_FILES = [
-  "AGENTS.md",
-  "SOUL.md",
-  "IDENTITY.md",
-  "USER.md",
-  "BOOTSTRAP.md",
-  "HEARTBEAT.md",
-  "TOOLS.md"
-];
-
-// 从 .ID.sample 目录加载模板内容
-function loadPersonaTemplate(filename: string): string {
-  const samplePath = path.join(ID_SAMPLE_DIR, filename);
-  if (fs.existsSync(samplePath)) {
-    return fs.readFileSync(samplePath, "utf-8");
-  }
-  // 如果 .ID.sample 不存在，返回最小模板
-  return `# ${filename}\n\n(模板文件缺失，请检查 .ID.sample 目录)`;
-}
-
-class IdentitySystem {
-  private workspaceDir: string;
-  private identityCache: { name: string; soul: string; user: string; rules: string } | null = null;
-
-  constructor(workspaceDir: string) {
-    this.workspaceDir = workspaceDir;
-  }
-
-  // 初始化 Workspace（从 .ID.sample 复制缺失的人格文件）
-  initWorkspace(): string {
-    const created: string[] = [];
-    const existed: string[] = [];
-
-    for (const filename of PERSONA_FILES) {
-      const filePath = path.join(this.workspaceDir, filename);
-      if (!fs.existsSync(filePath)) {
-        const content = loadPersonaTemplate(filename);
-        fs.writeFileSync(filePath, content, "utf-8");
-        created.push(filename);
-      } else {
-        existed.push(filename);
-      }
-    }
-
-    // 确保 memory 目录存在
-    const memoryDir = path.join(this.workspaceDir, "memory");
-    if (!fs.existsSync(memoryDir)) {
-      fs.mkdirSync(memoryDir, { recursive: true });
-      created.push("memory/");
-    }
-
-    if (created.length === 0) {
-      return `Workspace 已就绪 (${existed.length} 个人格文件)`;
-    }
-    return `Workspace 初始化:\n  创建: ${created.join(", ")}\n  已存在: ${existed.join(", ")}`;
-  }
-  // 加载身份信息
-  loadIdentity(): string {
-    const files = ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"];
-    const contents: Record<string, string> = {};
-
-    for (const file of files) {
-      const filePath = path.join(this.workspaceDir, file);
-      contents[file] = fs.existsSync(filePath)
-        ? fs.readFileSync(filePath, "utf-8")
-        : `(${file} 不存在)`;
-    }
-
-    // 提取名字 (支持 **名字** 和 **Name** 两种格式)
-    const nameMatch = contents["IDENTITY.md"].match(/\*\*(名字|Name)\*\*:\s*(.+)/);
-    const name = nameMatch ? nameMatch[2].trim() : "Assistant";
-
-    this.identityCache = {
-      name,
-      soul: contents["SOUL.md"],
-      user: contents["USER.md"],
-      rules: contents["AGENTS.md"]
-    };
-
-    // 检查是否需要首次引导
-    const bootstrapPath = path.join(this.workspaceDir, "BOOTSTRAP.md");
-    const needsBootstrap = fs.existsSync(bootstrapPath) && name === "(待设置)";
-
-    return needsBootstrap
-      ? `身份加载完成: ${name} (首次运行，请完成引导设置)`
-      : `身份加载完成: ${name}`;
-  }
-
-  // 获取增强的系统提示（注入身份信息）
-  getEnhancedSystemPrompt(basePrompt: string): string {
-    if (!this.identityCache) {
-      this.loadIdentity();
-    }
-
-    return `${basePrompt}
-
-# 你的身份
-${this.identityCache!.soul}
-
-# 用户信息  
-${this.identityCache!.user}
-
-# 行为规范
-${this.identityCache!.rules}`;
-  }
-
-  // 更新身份文件
-  updateIdentityFile(file: string, content: string): string {
-    const validFiles = ["IDENTITY.md", "SOUL.md", "USER.md", "HEARTBEAT.md", "TOOLS.md"];
-    if (!validFiles.includes(file)) {
-      return `错误: 只能更新 ${validFiles.join(", ")}`;
-    }
-    const filePath = path.join(this.workspaceDir, file);
-    fs.writeFileSync(filePath, content, "utf-8");
-    this.identityCache = null; // 清除缓存
-    return `已更新: ${file}`;
-  }
-
-  // 获取当前身份摘要
-  getIdentitySummary(): string {
-    if (!this.identityCache) {
-      this.loadIdentity();
-    }
-    return `名字: ${this.identityCache!.name}\n\n灵魂摘要:\n${this.identityCache!.soul.slice(0, 300)}...`;
-  }
-
-  // 获取名字
-  getName(): string {
-    if (!this.identityCache) {
-      this.loadIdentity();
-    }
-    return this.identityCache!.name;
-  }
-}
-
-const identitySystem = new IdentitySystem(IDENTITY_DIR);
-
-// ============================================================================
-// 系统提示
-// ============================================================================
-
-const BASE_SYSTEM = `你是 OpenClaw V6 - 有身份的 Agent。
-
-## 工作循环
-identify -> load identity -> plan -> (load skill) -> (delegate -> collect) -> execute -> track -> remember
-
-## 身份系统 (V6 核心)
-工具: identity_init, identity_load, identity_update, identity_get
-
-人格文件:
-- AGENTS.md: 行为规范（安全规则、内外部操作区分）
-- SOUL.md: 核心特质（性格、边界、风格）
-- IDENTITY.md: 身份信息（名字、角色、特点）
-- USER.md: 用户画像（称呼、时区、偏好）
-
-身份加载策略:
-- 会话开始时自动加载身份文件
-- 按照 AGENTS.md 的行为规范行事
-- 你有自己的名字、性格和价值观
-- 身份信息注入系统提示，影响回复风格
-
-## Skill 系统 (继承 V5)
-工具: Skill - 加载领域技能
-- 任务匹配 skill 描述时，立即加载
-- 可用 Skill:
-${skillLoader.getDescriptions()}
-
-## 子代理系统 (继承 V4)
-工具: subagent - 委托子任务给隔离进程
-- 独立子任务用 subagent 委托执行
-- 适合: 代码审查、独立模块分析、批量处理
-
-## 任务规划系统 (继承 V3)
-工具: TodoWrite - 更新任务列表（替换式）
-- 复杂任务先用 TodoWrite 创建任务列表
-- 最多 20 个任务，同时只能 1 个 in_progress
-
-## 记忆系统 (继承 V2)
-- 重要信息用 memory_append 记录
-- 相关知识用 memory_search 查找`;
-
-// ============================================================================
-// 工具定义
-// ============================================================================
-
-const TOOLS: Anthropic.Tool[] = [
-  {
-    name: "bash",
-    description: "执行 shell 命令",
-    input_schema: { type: "object" as const, properties: { command: { type: "string" as const } }, required: ["command"] }
-  },
-  {
-    name: "read_file",
-    description: "读取文件内容",
-    input_schema: { type: "object" as const, properties: { path: { type: "string" as const }, limit: { type: "number" as const } }, required: ["path"] }
-  },
-  {
-    name: "write_file",
-    description: "写入文件内容",
-    input_schema: { type: "object" as const, properties: { path: { type: "string" as const }, content: { type: "string" as const } }, required: ["path", "content"] }
-  },
-  {
-    name: "edit_file",
-    description: "精确编辑文件",
-    input_schema: { type: "object" as const, properties: { path: { type: "string" as const }, old_text: { type: "string" as const }, new_text: { type: "string" as const } }, required: ["path", "old_text", "new_text"] }
-  },
-  {
-    name: "grep",
-    description: "搜索文件内容",
-    input_schema: { type: "object" as const, properties: { pattern: { type: "string" as const }, path: { type: "string" as const }, recursive: { type: "boolean" as const } }, required: ["pattern", "path"] }
-  },
-  // V3 任务工具（新增）
-  {
-    name: "TodoWrite",
-    description: "更新任务列表。用于多步骤任务规划，最多20个任务，仅1个in_progress",
-    input_schema: {
-      type: "object" as const,
-      properties: {
-        items: {
-          type: "array" as const,
-          items: {
-            type: "object" as const,
-            properties: {
-              content: { type: "string" as const, description: "任务描述" },
-              status: { type: "string" as const, enum: ["pending", "in_progress", "completed"], description: "任务状态" },
-              activeForm: { type: "string" as const, description: "进行时的描述（如：正在分析...）" }
-            },
-            required: ["content", "status", "activeForm"]
-          }
-        }
-      },
-      required: ["items"]
-    }
-  },
-  // V4 子代理工具
-  {
-    name: "subagent",
-    description: "委托子任务给隔离的Agent进程执行。适合独立任务如代码审查、模块分析等",
-    input_schema: {
-      type: "object" as const,
-      properties: {
-        task: { type: "string" as const, description: "子任务描述，需明确输入和期望输出" },
-        context: { type: "string" as const, description: "可选的上下文信息（如文件路径、关键代码片段）" }
-      },
-      required: ["task"]
-    }
-  },
-  // V5 Skill 工具（新增）
-  {
-    name: "Skill",
-    description: "加载领域技能以获得专业知识。当任务涉及特定领域时立即调用",
-    input_schema: {
-      type: "object" as const,
-      properties: {
-        skill: { type: "string" as const, description: "技能名称" }
-      },
-      required: ["skill"]
-    }
-  },
-  // V2 记忆工具
-  {
-    name: "memory_search",
-    description: "语义搜索长期记忆",
-    input_schema: { type: "object" as const, properties: { query: { type: "string" as const }, max_results: { type: "number" as const } }, required: ["query"] }
-  },
-  {
-    name: "memory_get",
-    description: "读取记忆文件原始内容",
-    input_schema: { type: "object" as const, properties: { path: { type: "string" as const }, from_line: { type: "number" as const }, lines: { type: "number" as const } }, required: ["path"] }
-  },
-  {
-    name: "memory_append",
-    description: "追加内容到记忆文件",
-    input_schema: { type: "object" as const, properties: { path: { type: "string" as const }, content: { type: "string" as const } }, required: ["path", "content"] }
-  },
-  {
-    name: "memory_ingest",
-    description: "摄入文件到记忆库",
-    input_schema: { type: "object" as const, properties: { path: { type: "string" as const } }, required: ["path"] }
-  },
-  {
-    name: "memory_stats",
-    description: "查看记忆库统计",
-    input_schema: { type: "object" as const, properties: {} }
-  },
-  // V6 新增: 身份工具
-  {
-    name: "identity_init",
-    description: "初始化 Workspace（创建人格文件 AGENTS.md/SOUL.md/IDENTITY.md/USER.md）",
-    input_schema: { type: "object" as const, properties: {} }
-  },
-  {
-    name: "identity_load",
-    description: "重新加载身份信息",
-    input_schema: { type: "object" as const, properties: {} }
-  },
-  {
-    name: "identity_update",
-    description: "更新身份文件",
-    input_schema: {
-      type: "object" as const,
-      properties: {
-        file: { type: "string" as const, enum: ["IDENTITY.md", "SOUL.md", "USER.md", "HEARTBEAT.md", "TOOLS.md"], description: "要更新的文件" },
-        content: { type: "string" as const, description: "新内容" }
-      },
-      required: ["file", "content"]
-    }
-  },
-  {
-    name: "identity_get",
-    description: "获取当前身份摘要",
-    input_schema: { type: "object" as const, properties: {} }
-  }
-];
-
-// ============================================================================
-// 工具实现
-// ============================================================================
-
-function safePath(p: string): string {
-  const resolved = path.resolve(WORKDIR, p);
-  const relative = path.relative(WORKDIR, resolved);
-  if (relative.startsWith("..") || path.isAbsolute(relative)) {
-    throw new Error(`路径超出工作区: ${p}`);
-  }
-  return resolved;
-}
-
-function runBash(command: string): string {
-  const dangerous = ["rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"];
-  if (dangerous.some(d => command.includes(d))) return "错误: 危险命令被阻止";
-  try {
-    const output = execSync(command, { encoding: "utf-8", timeout: 60000, cwd: WORKDIR });
-    return output.slice(0, 50000) || "(无输出)";
-  } catch (e: any) {
-    return `错误: ${e.stderr || e.message || String(e)}`;
-  }
-}
-
-function runRead(filePath: string, limit?: number): string {
-  try {
-    const fullPath = safePath(filePath);
-    let content = fs.readFileSync(fullPath, "utf-8");
-    const lines = content.split("\n");
-    if (limit && limit < lines.length) {
-      return lines.slice(0, limit).join("\n") + `\n... (${lines.length - limit} 行更多)`;
-    }
-    return content.slice(0, 50000);
-  } catch (e: any) {
-    return `错误: ${e.message}`;
-  }
-}
-
-function runWrite(filePath: string, content: string): string {
-  try {
-    const fullPath = safePath(filePath);
-    const dir = path.dirname(fullPath);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(fullPath, content, "utf-8");
-    return `已写入: ${filePath}`;
-  } catch (e: any) {
-    return `错误: ${e.message}`;
-  }
-}
-
-function runEdit(filePath: string, oldText: string, newText: string): string {
-  try {
-    const fullPath = safePath(filePath);
-    const content = fs.readFileSync(fullPath, "utf-8");
-    if (!content.includes(oldText)) return "错误: 未找到匹配的文本";
-    fs.writeFileSync(fullPath, content.replace(oldText, newText), "utf-8");
-    return `已编辑: ${filePath}`;
-  } catch (e: any) {
-    return `错误: ${e.message}`;
-  }
-}
-
-function runGrep(pattern: string, searchPath: string, recursive?: boolean): string {
-  try {
-    const fullPath = safePath(searchPath);
-    const isDir = fs.statSync(fullPath).isDirectory();
-    if (isDir) {
-      const cmd = recursive !== false
-        ? `find "${fullPath}" -type f -exec grep -l "${pattern.replace(/"/g, '\\"')}" {} + 2>/dev/null | head -20`
-        : `grep -l "${pattern.replace(/"/g, '\\"')}" "${fullPath}"/* 2>/dev/null | head -20`;
-      const output = execSync(cmd, { encoding: "utf-8", timeout: 30000 });
-      const files = output.trim().split("\n").filter(Boolean);
-      return files.length === 0 ? "未找到匹配" : files.join("\n");
-    } else {
-      const content = fs.readFileSync(fullPath, "utf-8");
-      const matches = content.split("\n").map((line, idx) =>
-        line.includes(pattern) ? `${idx + 1}: ${line}` : null
-      ).filter(Boolean) as string[];
-      return matches.length === 0 ? "未找到匹配" : matches.slice(0, 50).join("\n");
-    }
-  } catch (e: any) {
-    return `错误: ${e.message}`;
-  }
-}
-
-// V4: 子代理 - 通过进程递归实现上下文隔离
 function runSubagent(task: string, context?: string): string {
   try {
     const scriptPath = fileURLToPath(import.meta.url);
-    const fullPrompt = context
-      ? `[任务] ${task}\n\n[上下文]\n${context}`
-      : task;
-
-    // 转义引号避免 shell 注入
+    const fullPrompt = context ? `[任务] ${task}\n\n[上下文]\n${context}` : task;
     const escapedPrompt = fullPrompt.replace(/"/g, '\\"');
     const cmd = `npx tsx "${scriptPath}" "${escapedPrompt}"`;
 
@@ -814,6 +259,531 @@ function runSubagent(task: string, context?: string): string {
 }
 
 // ============================================================================
+// V5: Skill 系统（保留）
+// ============================================================================
+
+interface Skill {
+  name: string;
+  description: string;
+  content: string;
+  dir: string;
+}
+
+class SkillLoader {
+  private skillsDir: string;
+  private skills: Map<string, Skill> = new Map();
+
+  constructor() {
+    this.skillsDir = SKILL_DIR;
+    this.loadSkills();
+  }
+
+  private parseSkillFile(filePath: string): Skill | null {
+    try {
+      const content = fs.readFileSync(filePath, "utf-8");
+      const match = content.match(/^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/);
+      if (!match) return null;
+
+      const yamlContent = match[1];
+      const markdownContent = match[2].trim();
+      const name = yamlContent.match(/name:\s*(.+)/)?.[1]?.trim();
+      const description = yamlContent.match(/description:\s*(.+)/)?.[1]?.trim();
+
+      if (!name || !description) return null;
+      return { name, description, content: markdownContent, dir: path.dirname(filePath) };
+    } catch (e) { return null; }
+  }
+
+  private loadSkills() {
+    if (!fs.existsSync(this.skillsDir)) return;
+    const entries = fs.readdirSync(this.skillsDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        const skillPath = path.join(this.skillsDir, entry.name, "SKILL.md");
+        if (fs.existsSync(skillPath)) {
+          const skill = this.parseSkillFile(skillPath);
+          if (skill) this.skills.set(skill.name, skill);
+        }
+      }
+    }
+  }
+
+  getDescriptions(): string {
+    if (this.skills.size === 0) return "无可用技能";
+    return Array.from(this.skills.values()).map(s => `- ${s.name}: ${s.description}`).join("\n");
+  }
+
+  get count(): number { return this.skills.size; }
+
+  loadSkill(name: string): string {
+    const skill = this.skills.get(name);
+    if (!skill) return `错误: 技能 '${name}' 不存在。可用: ${this.listSkills()}`;
+    return `<skill-loaded name="${name}">\n${skill.content}\n</skill-loaded>`;
+  }
+
+  listSkills(): string {
+    return this.skills.size === 0 ? "无" : Array.from(this.skills.keys()).join(", ");
+  }
+}
+
+const skillLoader = new SkillLoader();
+
+// ============================================================================
+// V5.5: Hook 系统（保留，与 V5.5 兼容）
+// ============================================================================
+
+type HookType = "bootstrap:files" | "session:start" | "session:end";
+
+interface HookEvent {
+  type: HookType;
+  context: Record<string, unknown>;
+  prevented: boolean;
+}
+
+type HookHandler = (event: HookEvent) => Promise<void> | void;
+
+class HookSystem {
+  private handlers: Map<HookType, HookHandler[]> = new Map();
+
+  register(type: HookType, handler: HookHandler): void {
+    if (!this.handlers.has(type)) this.handlers.set(type, []);
+    this.handlers.get(type)!.push(handler);
+  }
+
+  async emit(type: HookType, context: Record<string, unknown> = {}): Promise<HookEvent> {
+    const event: HookEvent = { type, context, prevented: false };
+    const handlers = this.handlers.get(type) || [];
+    for (const handler of handlers) {
+      await handler(event);
+      if (event.prevented) break;
+    }
+    return event;
+  }
+
+  has(type: HookType): boolean {
+    return (this.handlers.get(type)?.length || 0) > 0;
+  }
+}
+
+const hooks = new HookSystem();
+
+// ============================================================================
+// V6 新增: 身份系统
+// ============================================================================
+
+// 人格文件定义（V6 扩展：新增 BOOTSTRAP.md, HEARTBEAT.md, TOOLS.md）
+const PERSONA_FILES = [
+  "AGENTS.md",      // 行为规范
+  "SOUL.md",        // 性格价值观
+  "IDENTITY.md",    // 名字角色
+  "USER.md",        // 用户画像
+  "BOOTSTRAP.md",   // 首次引导配置
+  "HEARTBEAT.md",   // 心跳/定时任务配置
+  "TOOLS.md"        // 工具扩展配置
+];
+
+interface PersonaFile {
+  name: string;
+  path: string;
+  content: string;
+  exists: boolean;
+}
+
+class IdentitySystem {
+  private workspaceDir: string;
+  private sampleDir: string;
+  private identityCache: { name: string; soul: string; user: string; rules: string } | null = null;
+
+  constructor(workspaceDir: string, sampleDir: string) {
+    this.workspaceDir = workspaceDir;
+    this.sampleDir = sampleDir;
+  }
+
+  // 从 sample 目录加载模板
+  private loadTemplate(filename: string): string {
+    const samplePath = path.join(this.sampleDir, filename);
+    if (fs.existsSync(samplePath)) {
+      return fs.readFileSync(samplePath, "utf-8");
+    }
+    // 默认模板
+    const defaults: Record<string, string> = {
+      "AGENTS.md": "# 行为规范\n\n- 专业、高效、有帮助",
+      "SOUL.md": "# 性格\n\n- 冷静、理性、友善",
+      "IDENTITY.md": "# 身份\n\n**Name:** _（请设置你的名字）_\n**Creature:** AI 助手\n**Vibe:** 专业、有帮助",
+      "USER.md": "# 用户\n\n- 开发者",
+      "BOOTSTRAP.md": "# 首次引导\n\n欢迎！这是你的第一次对话。\n\n请告诉我：\n1. 你希望我叫什么名字？\n2. 你希望我是什么角色/生物？\n3. 你的名字叫什么？\n\n例如：\"你是瑞克，我是莫蒂\"",
+      "HEARTBEAT.md": "# 心跳配置\n\n## 定时任务\n\n暂无配置",
+      "TOOLS.md": "# 工具扩展\n\n## 自定义工具\n\n暂无配置"
+    };
+    return defaults[filename] || `# ${filename}\n\n(模板缺失)`;
+  }
+
+  // 初始化 Workspace
+  initWorkspace(): string {
+    const created: string[] = [];
+    const existed: string[] = [];
+
+    if (!fs.existsSync(this.workspaceDir)) {
+      fs.mkdirSync(this.workspaceDir, { recursive: true });
+    }
+
+    // 检查是否是全新 workspace（除了 BOOTSTRAP.md 外的所有核心文件都不存在）
+    const coreFiles = PERSONA_FILES.filter(f => f !== "BOOTSTRAP.md");
+    const isBrandNewWorkspace = coreFiles.every(filename => {
+      const filePath = path.join(this.workspaceDir, filename);
+      return !fs.existsSync(filePath);
+    });
+
+    for (const filename of PERSONA_FILES) {
+      // BOOTSTRAP.md 只在全新 workspace 时创建
+      if (filename === "BOOTSTRAP.md" && !isBrandNewWorkspace) {
+        continue;
+      }
+
+      const filePath = path.join(this.workspaceDir, filename);
+      if (!fs.existsSync(filePath)) {
+        fs.writeFileSync(filePath, this.loadTemplate(filename), "utf-8");
+        created.push(filename);
+      } else {
+        existed.push(filename);
+      }
+    }
+
+    // 确保 memory 目录
+    const memoryDir = path.join(this.workspaceDir, "memory");
+    if (!fs.existsSync(memoryDir)) {
+      fs.mkdirSync(memoryDir, { recursive: true });
+      created.push("memory/");
+    }
+
+    if (created.length === 0) {
+      return `Workspace 已就绪 (${existed.length} 个人格文件)`;
+    }
+    return `Workspace 初始化:\n  创建: ${created.join(", ")}\n  已存在: ${existed.join(", ")}`;
+  }
+
+  // 加载所有人格文件（供 Hook 修改）
+  loadPersonaFiles(): PersonaFile[] {
+    return PERSONA_FILES.map(filename => {
+      const filePath = path.join(this.workspaceDir, filename);
+      const exists = fs.existsSync(filePath);
+      return {
+        name: filename,
+        path: filePath,
+        content: exists ? fs.readFileSync(filePath, "utf-8") : "",
+        exists
+      };
+    });
+  }
+
+  // 设置人格文件（Hook 修改后）
+  setPersonaFiles(files: PersonaFile[]): void {
+    // 仅用于 Hook 修改内存中的内容
+    // V7 会使用此方法来应用 Hook 修改
+  }
+
+  // 加载身份信息（简化版：不再提取名字，AI 直接读文件内容理解）
+  loadIdentity(): string {
+    const files = this.loadPersonaFiles();
+    const contents: Record<string, string> = {};
+
+    for (const file of files) {
+      contents[file.name] = file.content || `(${file.name} 不存在)`;
+    }
+
+    this.identityCache = {
+      name: "Agent", // 仅用于 REPL 显示，AI 从 IDENTITY.md 自己理解身份
+      soul: contents["SOUL.md"],
+      user: contents["USER.md"],
+      rules: contents["AGENTS.md"]
+    };
+
+    // 检查是否需要首次引导：只看 BOOTSTRAP.md 是否存在
+    const bootstrapPath = path.join(this.workspaceDir, "BOOTSTRAP.md");
+    const needsBootstrap = fs.existsSync(bootstrapPath);
+
+    return needsBootstrap
+      ? `🌟 首次运行！请与我对话完成身份设置。`
+      : `身份加载完成`;
+  }
+
+  // 获取增强的系统提示（简化版：直接注入文件内容，让 AI 自己理解）
+  async buildSystemPrompt(basePrompt: string): Promise<string> {
+    if (!this.identityCache) this.loadIdentity();
+
+    // 加载人格文件
+    let personaFiles = this.loadPersonaFiles();
+
+    // 触发 bootstrap:files Hook（V5.5 兼容）
+    if (hooks.has("bootstrap:files")) {
+      const event = await hooks.emit("bootstrap:files", { files: personaFiles });
+      if (event.context.files) {
+        personaFiles = event.context.files as PersonaFile[];
+      }
+    }
+
+    // 提取文件内容
+    const getContent = (name: string) => personaFiles.find(f => f.name === name)?.content || "";
+
+    const identityContent = getContent("IDENTITY.md");
+    const soulContent = getContent("SOUL.md");
+    const userContent = getContent("USER.md");
+    const agentsContent = getContent("AGENTS.md");
+    const bootstrapContent = getContent("BOOTSTRAP.md");
+
+    // 检查是否需要首次引导：只看 BOOTSTRAP.md 是否存在
+    const bootstrapPath = path.join(this.workspaceDir, "BOOTSTRAP.md");
+    const needsBootstrap = fs.existsSync(bootstrapPath);
+
+    // 首次引导指令
+    let bootstrapDirective = "";
+    if (needsBootstrap && bootstrapContent) {
+      bootstrapDirective = `
+## 🌟 首次引导模式 (当前激活)
+
+${bootstrapContent}
+
+完成身份设置后，使用 identity_update 工具更新 IDENTITY.md 和 USER.md，然后调用 bootstrap_complete 删除此文件。
+`;
+    }
+
+    return `${basePrompt}
+${bootstrapDirective}
+## 身份与人格
+
+如果 IDENTITY.md 定义了角色，你就是那个角色。用角色的语气、口头禅、思维方式说话。
+如果 SOUL.md 存在，体现其人格和语气。
+
+### IDENTITY.md
+${identityContent || "(未配置)"}
+
+### SOUL.md
+${soulContent || "(未配置)"}
+
+### USER.md
+${userContent || "(未配置)"}
+
+### AGENTS.md
+${agentsContent || "(未配置)"}`;
+  }
+
+  // 更新人格文件
+  updateFile(filename: string, content: string): string {
+    const validFiles = ["IDENTITY.md", "SOUL.md", "USER.md", "AGENTS.md", "HEARTBEAT.md", "TOOLS.md"];
+    if (!validFiles.includes(filename)) {
+      return `错误: 只能更新 ${validFiles.join(", ")}`;
+    }
+    const filePath = path.join(this.workspaceDir, filename);
+    fs.writeFileSync(filePath, content, "utf-8");
+    this.identityCache = null; // 清除缓存
+    return `已更新: ${filename}`;
+  }
+
+  // 获取当前身份摘要
+  getIdentitySummary(): string {
+    if (!this.identityCache) {
+      this.loadIdentity();
+    }
+    return `灵魂摘要:\n${this.identityCache!.soul.slice(0, 300)}...`;
+  }
+
+  // 获取名字（仅用于 REPL 显示）
+  getName(): string {
+    return "Agent";
+  }
+
+  get stats(): string {
+    const files = this.loadPersonaFiles();
+    const exists = files.filter(f => f.exists).length;
+    return `人格文件: ${exists}/${files.length}`;
+  }
+}
+
+const identitySystem = new IdentitySystem(IDENTITY_DIR, ID_SAMPLE_DIR);
+
+// ============================================================================
+// V6: Soul Switch Hook（可选）
+// ============================================================================
+
+function registerSoulSwitchHook() {
+  const configPath = path.join(IDENTITY_DIR, "SOUL_SWITCH.json");
+
+  hooks.register("bootstrap:files", async (event) => {
+    if (!fs.existsSync(configPath)) return;
+
+    let config: { chance?: number; file?: string };
+    try {
+      config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+    } catch { return; }
+
+    const files = event.context.files as PersonaFile[];
+    const altSoulFile = config.file || "SOUL_EVIL.md";
+    const altSoulPath = path.join(IDENTITY_DIR, altSoulFile);
+
+    if (!fs.existsSync(altSoulPath)) return;
+
+    // 随机触发
+    if (config.chance && Math.random() < config.chance) {
+      const altContent = fs.readFileSync(altSoulPath, "utf-8");
+      event.context.files = files.map(f =>
+        f.name === "SOUL.md" ? { ...f, content: altContent, exists: true } : f
+      );
+      console.log(`\x1b[35m🔮 Soul Switch 激活: ${altSoulFile}\x1b[0m`);
+    }
+  });
+}
+
+// 默认注册 Soul Switch Hook
+registerSoulSwitchHook();
+
+// ============================================================================
+// 系统提示和工具定义
+// ============================================================================
+
+const BASE_SYSTEM = `你是 OpenClaw V6 - 身份增强型 Agent，工作目录: ${WORKDIR}
+
+## 🚨 第一优先级：Skill 加载
+
+**可用 Skills:**
+${skillLoader.getDescriptions()}
+
+**强制规则：**
+1. 收到任务后，**第一步必须**检查是否有匹配的 Skill
+2. 如果任务涉及上述任何 Skill 的领域，**必须先调用 Skill 工具加载**
+3. 只有加载 Skill 后，才能开始规划和执行
+
+## 工作循环
+1. **identify** - 识别任务类型
+2. **load skill** - 🚨 加载匹配的 Skill（必须！）
+3. **plan** - 用 TodoWrite 规划任务
+4. **execute** - 按 Skill 指引执行
+5. **track** - 更新任务状态
+
+## 其他工具
+- TodoWrite: 任务规划
+- subagent: 委托子任务
+- memory_*: 长期记忆
+- identity_update: 更新人格文件
+- bash/read/write/edit/grep: 基础操作`;
+
+// 动态系统提示（由 IdentitySystem 构建）
+let SYSTEM = "";
+
+const TOOLS: Anthropic.Tool[] = [
+  { name: "bash", description: "执行 shell 命令", input_schema: { type: "object" as const, properties: { command: { type: "string" as const } }, required: ["command"] } },
+  { name: "read_file", description: "读取文件内容", input_schema: { type: "object" as const, properties: { path: { type: "string" as const }, limit: { type: "number" as const } }, required: ["path"] } },
+  { name: "write_file", description: "写入文件内容", input_schema: { type: "object" as const, properties: { path: { type: "string" as const }, content: { type: "string" as const } }, required: ["path", "content"] } },
+  { name: "edit_file", description: "精确编辑文件", input_schema: { type: "object" as const, properties: { path: { type: "string" as const }, old_text: { type: "string" as const }, new_text: { type: "string" as const } }, required: ["path", "old_text", "new_text"] } },
+  { name: "grep", description: "搜索文件内容", input_schema: { type: "object" as const, properties: { pattern: { type: "string" as const }, path: { type: "string" as const } }, required: ["pattern", "path"] } },
+  { name: "memory_search", description: "语义搜索长期记忆", input_schema: { type: "object" as const, properties: { query: { type: "string" as const }, max_results: { type: "number" as const } }, required: ["query"] } },
+  { name: "memory_get", description: "读取记忆文件", input_schema: { type: "object" as const, properties: { path: { type: "string" as const } }, required: ["path"] } },
+  { name: "memory_append", description: "追加到记忆", input_schema: { type: "object" as const, properties: { path: { type: "string" as const }, content: { type: "string" as const } }, required: ["path", "content"] } },
+  { name: "memory_ingest", description: "摄入文件到记忆", input_schema: { type: "object" as const, properties: { path: { type: "string" as const } }, required: ["path"] } },
+  {
+    name: "TodoWrite",
+    description: "更新任务列表",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        items: {
+          type: "array" as const,
+          items: {
+            type: "object" as const,
+            properties: {
+              content: { type: "string" as const },
+              status: { type: "string" as const, enum: ["pending", "in_progress", "completed"] },
+              activeForm: { type: "string" as const }
+            },
+            required: ["content", "status", "activeForm"]
+          }
+        }
+      },
+      required: ["items"]
+    }
+  },
+  { name: "subagent", description: "委托子任务", input_schema: { type: "object" as const, properties: { task: { type: "string" as const }, context: { type: "string" as const } }, required: ["task"] } },
+  { name: "Skill", description: "加载领域技能。使用 skill='list' 查看所有可用技能，或指定技能名称加载", input_schema: { type: "object" as const, properties: { skill: { type: "string" as const } }, required: ["skill"] } },
+  {
+    name: "identity_update",
+    description: "更新人格文件 (IDENTITY.md/SOUL.md/USER.md/AGENTS.md/HEARTBEAT.md/TOOLS.md)",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        file: { type: "string" as const, enum: ["IDENTITY.md", "SOUL.md", "USER.md", "AGENTS.md", "HEARTBEAT.md", "TOOLS.md"], description: "要更新的文件" },
+        content: { type: "string" as const, description: "新内容" }
+      },
+      required: ["file", "content"]
+    }
+  },
+  {
+    name: "bootstrap_complete",
+    description: "完成首次引导后调用，删除 BOOTSTRAP.md 文件",
+    input_schema: { type: "object" as const, properties: {} }
+  }
+];
+
+// ============================================================================
+// 工具实现
+// ============================================================================
+
+function safePath(p: string): string {
+  const resolved = path.resolve(p);
+  const dangerousPaths = ["/etc", "/usr", "/bin", "/sbin", "/lib", "/sys", "/dev", "/proc"];
+  if (dangerousPaths.some(dp => resolved.startsWith(dp))) throw new Error(`禁止访问系统目录: ${p}`);
+  return resolved;
+}
+
+function runBash(command: string): string {
+  if (["rm -rf /", "sudo", "shutdown"].some(d => command.includes(d))) return "错误: 危险命令";
+  try { return execSync(command, { encoding: "utf-8", timeout: 60000, cwd: WORKDIR }).slice(0, 50000) || "(无输出)"; }
+  catch (e: any) { return `错误: ${e.message}`; }
+}
+
+function runRead(filePath: string, limit?: number): string {
+  try {
+    const fullPath = safePath(filePath);
+    let content = fs.readFileSync(fullPath, "utf-8");
+    if (limit) { const lines = content.split("\n"); content = lines.slice(0, limit).join("\n") + `\n... (${lines.length - limit} 行更多)`; }
+    return content.slice(0, 50000);
+  } catch (e: any) { return `错误: ${e.message}`; }
+}
+
+function runWrite(filePath: string, content: string): string {
+  try {
+    const fullPath = safePath(filePath);
+    const dir = path.dirname(fullPath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(fullPath, content, "utf-8");
+    return `已写入: ${filePath}`;
+  } catch (e: any) { return `错误: ${e.message}`; }
+}
+
+function runEdit(filePath: string, oldText: string, newText: string): string {
+  try {
+    const fullPath = safePath(filePath);
+    const content = fs.readFileSync(fullPath, "utf-8");
+    if (!content.includes(oldText)) return "错误: 未找到匹配文本";
+    fs.writeFileSync(fullPath, content.replaceAll(oldText, newText), "utf-8");
+    return `已编辑: ${filePath}`;
+  } catch (e: any) { return `错误: ${e.message}`; }
+}
+
+function runGrep(pattern: string, searchPath: string): string {
+  try {
+    const fullPath = safePath(searchPath);
+    const isDir = fs.statSync(fullPath).isDirectory();
+    if (isDir) {
+      const output = execSync(`grep -rl "${pattern.replace(/"/g, '\\"')}" "${fullPath}" 2>/dev/null | head -20`, { encoding: "utf-8" });
+      return output.trim() || "未找到匹配";
+    } else {
+      const content = fs.readFileSync(fullPath, "utf-8");
+      const matches = content.split("\n").map((line, idx) => line.includes(pattern) ? `${idx + 1}: ${line}` : null).filter(Boolean) as string[];
+      return matches.length === 0 ? "未找到匹配" : matches.slice(0, 50).join("\n");
+    }
+  } catch (e: any) { return `错误: ${e.message}`; }
+}
+
+// ============================================================================
 // Agent 循环
 // ============================================================================
 
@@ -821,10 +791,9 @@ async function chat(prompt: string, history: Anthropic.MessageParam[] = []): Pro
   history.push({ role: "user", content: prompt });
 
   while (true) {
-    // 构建请求
     const request = {
       model: MODEL,
-      system: [{ type: "text", text: identitySystem.getEnhancedSystemPrompt(BASE_SYSTEM) }],
+      system: [{ type: "text" as const, text: SYSTEM }],
       messages: history,
       tools: TOOLS,
       max_tokens: 8000
@@ -834,18 +803,13 @@ async function chat(prompt: string, history: Anthropic.MessageParam[] = []): Pro
     const logDir = path.join(WORKDIR, "logs");
     if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const logFile = path.join(logDir, `request-${timestamp}.json`);
-    fs.writeFileSync(logFile, JSON.stringify(request, null, 2));
-    console.log(`\x1b[90m[LOG] ${logFile}\x1b[0m`);
+    fs.writeFileSync(path.join(logDir, `request-${timestamp}.json`), JSON.stringify(request, null, 2));
 
     const response = await client.messages.create(request as any);
 
     const content: Anthropic.ContentBlockParam[] = response.content.map(block => {
-      if (block.type === "text") {
-        return { type: "text" as const, text: block.text };
-      } else if (block.type === "tool_use") {
-        return { type: "tool_use" as const, id: block.id, name: block.name, input: block.input as Record<string, unknown> };
-      }
+      if (block.type === "text") return { type: "text" as const, text: block.text };
+      if (block.type === "tool_use") return { type: "tool_use" as const, id: block.id, name: block.name, input: block.input as Record<string, unknown> };
       return { type: "text" as const, text: "" };
     });
     history.push({ role: "assistant", content });
@@ -867,35 +831,47 @@ async function chat(prompt: string, history: Anthropic.MessageParam[] = []): Pro
           case "read_file": output = runRead(args.path, args.limit); break;
           case "write_file": output = runWrite(args.path, args.content); break;
           case "edit_file": output = runEdit(args.path, args.old_text, args.new_text); break;
-          case "grep": output = runGrep(args.pattern, args.path, args.recursive); break;
-          case "TodoWrite": output = todoManager.update(args.items); break;
+          case "grep": output = runGrep(args.pattern, args.path); break;
+          case "memory_search": output = memory.search(args.query, args.max_results || 5); break;
+          case "memory_get": output = memory.get(args.path); break;
+          case "memory_append": output = memory.append(args.path, args.content); break;
+          case "memory_ingest": output = memory.ingestFile(safePath(args.path)); break;
+          case "TodoWrite":
+            try { output = todoManager.update(args.items); }
+            catch (e: any) { output = `错误: ${e.message}`; }
+            break;
           case "subagent": output = runSubagent(args.task, args.context); break;
           case "Skill":
-            output = skillLoader.loadSkill(args.skill);
-            console.log(`\x1b[36m[Skill 加载] ${args.skill} (${output.length} 字符)\x1b[0m`);
+            const skillName = args.skill;
+            if (skillName === "list") {
+              output = `可用技能:\n${skillLoader.getDescriptions()}`;
+            } else {
+              output = skillLoader.loadSkill(skillName);
+            }
+            console.log(`\x1b[36m[Skill 加载] ${skillName} (${output.length} 字符)\x1b[0m`);
             break;
-          case "memory_search": output = memory.search(args.query, args.max_results || 5); break;
-          case "memory_get": output = memory.get(args.path, args.from_line, args.lines); break;
-          case "memory_append": output = memory.append(args.path, args.content); break;
-          case "memory_ingest":
-            const fullPath = safePath(args.path);
-            const stat = fs.statSync(fullPath);
-            output = stat.isDirectory() ? memory.ingestDirectory(fullPath) : memory.ingestFile(fullPath);
+          case "identity_update":
+            output = identitySystem.updateFile(args.file, args.content);
+            // 更新后刷新系统提示
+            SYSTEM = await identitySystem.buildSystemPrompt(BASE_SYSTEM);
             break;
-          case "memory_stats": output = memory.stats(); break;
-          // V6 新增: 身份工具
-          case "identity_init": output = identitySystem.initWorkspace(); break;
-          case "identity_load": output = identitySystem.loadIdentity(); break;
-          case "identity_update": output = identitySystem.updateIdentityFile(args.file, args.content); break;
-          case "identity_get": output = identitySystem.getIdentitySummary(); break;
+          case "bootstrap_complete": {
+            const bootstrapPath = path.join(IDENTITY_DIR, "BOOTSTRAP.md");
+            if (fs.existsSync(bootstrapPath)) {
+              fs.unlinkSync(bootstrapPath);
+              output = "✅ 引导完成！BOOTSTRAP.md 已删除。你现在是完整的你了。";
+            } else {
+              output = "BOOTSTRAP.md 不存在，无需删除";
+            }
+            break;
+          }
           default: output = `未知工具: ${toolName}`;
         }
 
-        console.log(output.slice(0, 500) + (output.length > 500 ? "..." : ""));
+        console.log(output.slice(0, 400) + (output.length > 400 ? "..." : ""));
         results.push({ type: "tool_result", tool_use_id: block.id, content: output.slice(0, 50000) });
       }
     }
-
     history.push({ role: "user", content: results });
   }
 }
@@ -904,61 +880,78 @@ async function chat(prompt: string, history: Anthropic.MessageParam[] = []): Pro
 // 主入口
 // ============================================================================
 
-// V6: 启动时初始化 Workspace 并加载身份
-console.log(identitySystem.initWorkspace());
-console.log(identitySystem.loadIdentity());
+async function initialize(): Promise<void> {
+  // 初始化 Workspace
+  const initResult = identitySystem.initWorkspace();
+  console.log(`\x1b[90m[Identity] ${initResult}\x1b[0m`);
 
-if (process.argv[2]) {
-  // 单次执行模式
-  chat(process.argv[2]).then(console.log).catch(console.error);
-} else {
-  // 交互式 REPL 模式
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-    terminal: true
-  });
-  const history: Anthropic.MessageParam[] = [];
+  // 加载身份
+  identitySystem.loadIdentity();
 
-  console.log(`\nOpenClaw V6 - 有身份的 Agent (${identitySystem.getName()})`);
-  console.log(`${memory.stats()} | Skill: ${skillLoader.count} 个`);
-  console.log(`输入 'q' 或 'exit' 退出，空行继续等待输入\n`);
+  // 触发 bootstrap:files Hook
+  const personaFiles = identitySystem.loadPersonaFiles();
+  if (hooks.has("bootstrap:files")) {
+    const event = await hooks.emit("bootstrap:files", { files: personaFiles });
+    if (event.context.files) {
+      identitySystem.setPersonaFiles(event.context.files as PersonaFile[]);
+    }
+  }
 
-  const prompt = () => {
-    rl.question("\x1b[36m>> \x1b[0m", async (input) => {
-      const q = input.trim();
-
-      // 只有明确退出命令才退出
-      if (q === "q" || q === "exit" || q === "quit") {
-        console.log("再见！");
-        rl.close();
-        return;
-      }
-
-      // 空输入：继续等待
-      if (q === "") {
-        prompt();
-        return;
-      }
-
-      // 处理用户输入
-      try {
-        const response = await chat(q, history);
-        console.log(response);
-      } catch (e: any) {
-        console.error(`\x1b[31m错误: ${e.message}\x1b[0m`);
-      }
-
-      // 继续下一轮
-      prompt();
-    });
-  };
-
-  // 处理 Ctrl+C
-  rl.on("close", () => {
-    process.exit(0);
-  });
-
-  // 启动 REPL
-  prompt();
+  // 构建系统提示
+  SYSTEM = await identitySystem.buildSystemPrompt(BASE_SYSTEM);
 }
+
+async function main() {
+  await initialize();
+  await hooks.emit("session:start", { sessionId: Date.now().toString() });
+
+  // 检测是否需要首次引导
+  const isBootstrapMode = identitySystem.loadIdentity().includes("首次运行");
+
+  if (process.argv[2]) {
+    const result = await chat(process.argv[2]);
+    console.log(result);
+    await hooks.emit("session:end", { sessionId: Date.now().toString() });
+  } else {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
+    const history: Anthropic.MessageParam[] = [];
+
+    const ask = () => rl.question("\x1b[36m>> \x1b[0m", async (q) => {
+      if (q === "q" || q === "exit" || q === "quit") {
+        await hooks.emit("session:end", { sessionId: Date.now().toString() });
+        return rl.close();
+      }
+      if (q === "") { ask(); return; }
+      try { console.log(await chat(q, history)); } catch (e: any) { console.error(e.message); }
+      ask();
+    });
+
+    console.log(`\x1b[90mWorkspace: ${IDENTITY_DIR}\x1b[0m`);
+    console.log(`OpenClaw V6 - 身份增强型 Agent (${identitySystem.getName()})`);
+    console.log(`\n${memory.stats()} | ${todoManager.stats()} | Skill 库: ${skillLoader.count} 个`);
+    console.log("\n输入 'q' 或 'exit' 退出，空行继续等待输入\n");
+
+    // 首次引导模式：自动开始对话
+    if (isBootstrapMode) {
+      console.log("\x1b[33m[首次引导模式] 正在初始化身份...\x1b[0m\n");
+      chat("(系统触发：这是首次运行，请按照 BOOTSTRAP.md 的指引主动开始对话，引导用户完成身份设置。不要等待用户输入，直接开始！)", history)
+        .then(response => {
+          console.log(response);
+          ask();
+        })
+        .catch(e => {
+          console.error(`\x1b[31m错误: ${e.message}\x1b[0m`);
+          ask();
+        });
+    } else {
+      ask();
+    }
+
+    // 处理 Ctrl+C
+    rl.on("close", () => {
+      process.exit(0);
+    });
+  }
+}
+
+main().catch(console.error);

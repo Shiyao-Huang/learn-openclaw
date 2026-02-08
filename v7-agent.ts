@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
 /**
- * v7-agent.ts - 分层记忆与时间感知 (~1100行)
+ * v7-agent.ts - 分层记忆与时间感知 (~1250行)
  *
  * 核心哲学: "记忆不是数据库，是日记本"
  * ========================================
@@ -9,18 +9,6 @@
  * - 时间感知: 知道"今天"、"昨天"、"上周"
  * - 记忆整理: 从日记中提炼长期记忆
  *
- * V7.1 合并 V6 改进:
- * - 身份目录配置化: IDENTITY_DIR, ID_SAMPLE_DIR 环境变量
- * - 人格文件扩展: 新增 BOOTSTRAP.md, HEARTBEAT.md, TOOLS.md
- * - 模板外部化: 从 .ID.sample 目录加载模板
- * - 首次引导检测: 检测 BOOTSTRAP.md 提示引导设置
- * - 请求日志记录: 保存到 logs/ 目录
- * - REPL 改进: terminal 模式, Ctrl+C 处理
- *
- * 记忆结构:
- * - memory/YYYY-MM-DD.md: 每日原始记录（工作记忆）
- * - MEMORY.md: 精炼的长期记忆（策展记忆）
- *
  * 演进路线:
  * V0: bash 即一切
  * V1: 5个基础工具
@@ -28,7 +16,7 @@
  * V3: 极简任务规划
  * V4: 子代理协调
  * V5: Skill 系统
- * V6: 身份与灵魂
+ * V6: 身份与灵魂 + 首次引导
  * V7: 分层记忆 (当前)
  */
 
@@ -57,7 +45,24 @@ const client = new Anthropic({
 const MODEL = process.env.MODEL_ID || "claude-opus-4-6";
 const WORKDIR = process.cwd();
 const SKILL_DIR = process.env.SKILL_DIR || path.join(WORKDIR, "skills");
-const IDENTITY_DIR = process.env.IDENTITY_DIR || WORKDIR;
+
+// 智能 workspace 检测：优先使用环境变量，否则检查当前目录是否已有身份文件
+function detectWorkspace(): string {
+  if (process.env.IDENTITY_DIR) {
+    return process.env.IDENTITY_DIR;
+  }
+  const currentIdentity = path.join(WORKDIR, "IDENTITY.md");
+  if (fs.existsSync(currentIdentity)) {
+    return WORKDIR;
+  }
+  const workspaceDir = path.join(WORKDIR, ".workspace");
+  if (fs.existsSync(workspaceDir)) {
+    return workspaceDir;
+  }
+  return WORKDIR;
+}
+
+const IDENTITY_DIR = detectWorkspace();
 const ID_SAMPLE_DIR = process.env.ID_SAMPLE_DIR || path.join(__dirname, ".ID.sample");
 
 // ============================================================================
@@ -78,7 +83,7 @@ class LocalMemory {
   private docs: Map<string, MemoryDoc> = new Map();
 
   constructor() {
-    this.memoryDir = path.join(WORKDIR, "memory");
+    this.memoryDir = path.join(IDENTITY_DIR, "memory");
     this.indexFile = path.join(this.memoryDir, ".index.json");
     this.load();
   }
@@ -113,24 +118,6 @@ class LocalMemory {
     }
     const data = { docs: Array.from(this.docs.values()), updated: Date.now() };
     fs.writeFileSync(this.indexFile, JSON.stringify(data, null, 2));
-  }
-
-  // 文本分块
-  private chunkText(text: string, size: number = 500): string[] {
-    const chunks: string[] = [];
-    const paragraphs = text.split(/\n\n+/);
-    let current = "";
-
-    for (const para of paragraphs) {
-      if (current.length + para.length > size) {
-        if (current) chunks.push(current.trim());
-        current = para;
-      } else {
-        current += "\n\n" + para;
-      }
-    }
-    if (current) chunks.push(current.trim());
-    return chunks;
   }
 
   // 摄入文件
@@ -177,7 +164,7 @@ class LocalMemory {
     return `已摄入 ${total} 个文件到记忆库`;
   }
 
-  // 语义搜索 - 使用 Jaccard 相似度
+  // 语义搜索
   search(query: string, maxResults: number = 5): string {
     if (this.docs.size === 0) return "记忆库为空";
 
@@ -237,7 +224,7 @@ class LocalMemory {
 const memory = new LocalMemory();
 
 // ============================================================================
-// 任务管理系统 - V3 新增 (奥卡姆剃刀: 仅一个 TodoWrite 工具)
+// 任务管理系统
 // ============================================================================
 
 interface Todo {
@@ -250,7 +237,6 @@ class TodoManager {
   private todos: Todo[] = [];
 
   update(items: Todo[]): string {
-    // 验证规则
     const inProgressCount = items.filter(t => t.status === "in_progress").length;
     if (inProgressCount > 1) {
       return `错误: 只能有 1 个 in_progress 任务，当前有 ${inProgressCount} 个`;
@@ -277,16 +263,12 @@ class TodoManager {
 
     return lines.join("\n") + `\n\n总计: ${this.todos.length} | 待办: ${pending} | 进行中: ${inProgress} | 完成: ${completed}`;
   }
-
-  getCurrent(): string {
-    return this.format();
-  }
 }
 
 const todoManager = new TodoManager();
 
 // ============================================================================
-// Skill 系统 - V5 新增 (知识外部化与渐进式加载)
+// Skill 系统
 // ============================================================================
 
 interface Skill {
@@ -305,36 +287,25 @@ class SkillLoader {
     this.loadSkills();
   }
 
-  // 解析 SKILL.md 文件 (YAML frontmatter + Markdown body)
   private parseSkillFile(filePath: string): Skill | null {
     try {
       const content = fs.readFileSync(filePath, "utf-8");
-
-      // 匹配 ---\nYAML\n---\nMarkdown 格式
       const match = content.match(/^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/);
       if (!match) return null;
 
       const yamlContent = match[1];
       const markdownContent = match[2].trim();
-
-      // 简单 YAML 解析 (只处理 name 和 description)
       const name = yamlContent.match(/name:\s*(.+)/)?.[1]?.trim();
       const description = yamlContent.match(/description:\s*(.+)/)?.[1]?.trim();
 
       if (!name || !description) return null;
 
-      return {
-        name,
-        description,
-        content: markdownContent,
-        path: filePath
-      };
+      return { name, description, content: markdownContent, path: filePath };
     } catch (e) {
       return null;
     }
   }
 
-  // 加载所有 skill
   private loadSkills() {
     if (!fs.existsSync(this.skillsDir)) return;
 
@@ -352,7 +323,6 @@ class SkillLoader {
     }
   }
 
-  // 获取 skill 列表用于系统提示 (仅元数据)
   getDescriptions(): string {
     if (this.skills.size === 0) return "无可用技能";
 
@@ -362,12 +332,10 @@ class SkillLoader {
     return lines.join("\n");
   }
 
-  // 获取 skill 数量
   get count(): number {
     return this.skills.size;
   }
 
-  // 加载指定 skill 的完整内容 (作为 tool_result 注入)
   loadSkill(name: string): string {
     const skill = this.skills.get(name);
     if (!skill) return `错误: 技能 '${name}' 不存在`;
@@ -379,7 +347,6 @@ ${skill.content}
 请按照上述技能文档的指引完成任务。`;
   }
 
-  // 列出所有可用 skill 名称
   listSkills(): string {
     if (this.skills.size === 0) return "无可用技能";
     return Array.from(this.skills.keys()).join(", ");
@@ -389,10 +356,79 @@ ${skill.content}
 const skillLoader = new SkillLoader();
 
 // ============================================================================
-// V6 新增: 身份系统 - Workspace 初始化与人格加载
+// Hook 系统
 // ============================================================================
 
-// 人格文件列表（从 .ID.sample 目录复制）
+type HookEventType = "bootstrap" | "message" | "tool" | "memory" | "session";
+
+interface HookEvent {
+  type: HookEventType;
+  action: string;
+  context: Record<string, unknown>;
+  timestamp: Date;
+  prevented?: boolean;
+}
+
+type HookHandler = (event: HookEvent) => Promise<void> | void;
+
+interface WorkspaceBootstrapFile {
+  name: string;
+  path: string;
+  content?: string;
+  missing: boolean;
+}
+
+class HookSystem {
+  private handlers = new Map<string, HookHandler[]>();
+
+  register(eventKey: string, handler: HookHandler): void {
+    if (!this.handlers.has(eventKey)) {
+      this.handlers.set(eventKey, []);
+    }
+    this.handlers.get(eventKey)!.push(handler);
+  }
+
+  unregister(eventKey: string, handler: HookHandler): void {
+    const handlers = this.handlers.get(eventKey);
+    if (!handlers) return;
+    const index = handlers.indexOf(handler);
+    if (index !== -1) handlers.splice(index, 1);
+    if (handlers.length === 0) this.handlers.delete(eventKey);
+  }
+
+  async trigger(event: HookEvent): Promise<void> {
+    const typeHandlers = this.handlers.get(event.type) ?? [];
+    const specificHandlers = this.handlers.get(`${event.type}:${event.action}`) ?? [];
+
+    for (const handler of [...typeHandlers, ...specificHandlers]) {
+      if (event.prevented) break;
+      try {
+        await handler(event);
+      } catch (err) {
+        console.error(`\x1b[31mHook 错误 [${event.type}:${event.action}]:\x1b[0m`, err);
+      }
+    }
+  }
+
+  createEvent(type: HookEventType, action: string, context: Record<string, unknown> = {}): HookEvent {
+    return { type, action, context, timestamp: new Date() };
+  }
+
+  getRegisteredKeys(): string[] {
+    return Array.from(this.handlers.keys());
+  }
+
+  clear(): void {
+    this.handlers.clear();
+  }
+}
+
+const hooks = new HookSystem();
+
+// ============================================================================
+// 身份系统
+// ============================================================================
+
 const PERSONA_FILES = [
   "AGENTS.md",
   "SOUL.md",
@@ -403,14 +439,21 @@ const PERSONA_FILES = [
   "TOOLS.md"
 ];
 
-// 从 .ID.sample 目录加载模板内容
 function loadPersonaTemplate(filename: string): string {
   const samplePath = path.join(ID_SAMPLE_DIR, filename);
   if (fs.existsSync(samplePath)) {
     return fs.readFileSync(samplePath, "utf-8");
   }
-  // 如果 .ID.sample 不存在，返回最小模板
-  return `# ${filename}\n\n(模板文件缺失，请检查 .ID.sample 目录)`;
+  const defaults: Record<string, string> = {
+    "AGENTS.md": "# 行为规范\n\n- 专业、高效、有帮助",
+    "SOUL.md": "# 性格\n\n- 冷静、理性、友善",
+    "IDENTITY.md": "# 身份\n\n**Name:** _（请设置你的名字）_\n**Creature:** AI 助手\n**Vibe:** 专业、有帮助",
+    "USER.md": "# 用户\n\n- 开发者",
+    "BOOTSTRAP.md": "# 首次引导\n\n欢迎！这是你的第一次对话。\n\n请告诉我：\n1. 你希望我叫什么名字？\n2. 你希望我是什么角色/生物？\n3. 你的名字叫什么？\n\n例如：\"你是瑞克，我是莫蒂\"",
+    "HEARTBEAT.md": "# 心跳配置\n\n## 定时任务\n\n暂无配置",
+    "TOOLS.md": "# 工具扩展\n\n## 自定义工具\n\n暂无配置"
+  };
+  return defaults[filename] || `# ${filename}\n\n(模板缺失)`;
 }
 
 class IdentitySystem {
@@ -421,18 +464,26 @@ class IdentitySystem {
     this.workspaceDir = workspaceDir;
   }
 
-  // 初始化 Workspace（从 .ID.sample 复制缺失的人格文件）
   initWorkspace(): string {
     const created: string[] = [];
     const existed: string[] = [];
 
-    // 确保 workspace 目录存在
     if (!fs.existsSync(this.workspaceDir)) {
       fs.mkdirSync(this.workspaceDir, { recursive: true });
       created.push(path.basename(this.workspaceDir) + "/");
     }
 
+    const coreFiles = PERSONA_FILES.filter(f => f !== "BOOTSTRAP.md");
+    const isBrandNewWorkspace = coreFiles.every(filename => {
+      const filePath = path.join(this.workspaceDir, filename);
+      return !fs.existsSync(filePath);
+    });
+
     for (const filename of PERSONA_FILES) {
+      if (filename === "BOOTSTRAP.md" && !isBrandNewWorkspace) {
+        continue;
+      }
+
       const filePath = path.join(this.workspaceDir, filename);
       if (!fs.existsSync(filePath)) {
         const content = loadPersonaTemplate(filename);
@@ -443,7 +494,6 @@ class IdentitySystem {
       }
     }
 
-    // 确保 memory 目录存在
     const memoryDir = path.join(this.workspaceDir, "memory");
     if (!fs.existsSync(memoryDir)) {
       fs.mkdirSync(memoryDir, { recursive: true });
@@ -456,61 +506,122 @@ class IdentitySystem {
     return `Workspace 初始化:\n  创建: ${created.join(", ")}\n  已存在: ${existed.join(", ")}`;
   }
 
-  // 加载身份信息
+  loadBootstrapFiles(): WorkspaceBootstrapFile[] {
+    const files: WorkspaceBootstrapFile[] = [];
+    for (const filename of PERSONA_FILES) {
+      const filePath = path.join(this.workspaceDir, filename);
+      if (fs.existsSync(filePath)) {
+        files.push({
+          name: filename,
+          path: filePath,
+          content: fs.readFileSync(filePath, "utf-8"),
+          missing: false
+        });
+      } else {
+        files.push({
+          name: filename,
+          path: filePath,
+          missing: true
+        });
+      }
+    }
+    return files;
+  }
+
   loadIdentity(): string {
-    const files = ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"];
+    const files = this.loadBootstrapFiles();
     const contents: Record<string, string> = {};
 
     for (const file of files) {
-      const filePath = path.join(this.workspaceDir, file);
-      contents[file] = fs.existsSync(filePath)
-        ? fs.readFileSync(filePath, "utf-8")
-        : `(${file} 不存在)`;
+      contents[file.name] = file.content || `(${file.name} 不存在)`;
     }
 
-    // 提取名字 (支持 **名字** 和 **Name**，中英文冒号)
-    const nameMatch = contents["IDENTITY.md"].match(/\*\*(名字|Name)\*\*[：:]\s*(.+)/);
-    const rawName = nameMatch ? nameMatch[2].trim() : "";
-    // 过滤掉占位符文本
-    const name = (rawName && !rawName.startsWith("_（") && !rawName.startsWith("_("))
-      ? rawName
-      : "";
-
     this.identityCache = {
-      name: name || "Assistant",
+      name: "Agent", // 仅用于 REPL 显示，AI 从 IDENTITY.md 自己理解身份
       soul: contents["SOUL.md"],
       user: contents["USER.md"],
       rules: contents["AGENTS.md"]
     };
 
-    // 检查是否需要首次引导：BOOTSTRAP.md 存在且名字未设置
     const bootstrapPath = path.join(this.workspaceDir, "BOOTSTRAP.md");
-    const needsBootstrap = fs.existsSync(bootstrapPath) && !name;
+    const needsBootstrap = fs.existsSync(bootstrapPath);
 
     return needsBootstrap
       ? `🌟 首次运行！请与我对话完成身份设置。`
-      : `身份加载完成: ${this.identityCache.name}`;
+      : `身份加载完成`;
   }
 
-  // 获取增强的系统提示（注入身份信息）
-  getEnhancedSystemPrompt(basePrompt: string): string {
+  async getEnhancedSystemPromptAsync(basePrompt: string): Promise<string> {
     if (!this.identityCache) {
       this.loadIdentity();
     }
 
+    let bootstrapFiles = this.loadBootstrapFiles();
+
+    const hookEvent = hooks.createEvent("bootstrap", "files", { bootstrapFiles });
+    await hooks.trigger(hookEvent);
+    bootstrapFiles = hookEvent.context.bootstrapFiles as WorkspaceBootstrapFile[];
+
+    const getFileContent = (name: string): string => {
+      const file = bootstrapFiles.find(f => f.name === name);
+      return file?.content || "";
+    };
+
+    const identityContent = getFileContent("IDENTITY.md");
+    const soulContent = getFileContent("SOUL.md");
+    const userContent = getFileContent("USER.md");
+    const agentsContent = getFileContent("AGENTS.md");
+    const bootstrapContent = getFileContent("BOOTSTRAP.md");
+
+    // 检查是否需要首次引导：只看 BOOTSTRAP.md 是否存在
+    const bootstrapPath = path.join(this.workspaceDir, "BOOTSTRAP.md");
+    const needsBootstrap = fs.existsSync(bootstrapPath);
+
+    let bootstrapDirective = "";
+    if (needsBootstrap && bootstrapContent) {
+      bootstrapDirective = `
+## 🌟 首次引导模式 (当前激活)
+
+${bootstrapContent}
+
+完成身份设置后，使用 identity_update 工具更新 IDENTITY.md 和 USER.md，然后调用 bootstrap_complete 删除此文件。
+`;
+    }
+
+    const promptEvent = hooks.createEvent("bootstrap", "prompt", {
+      basePrompt,
+      bootstrapDirective,
+      identityContent,
+      soulContent,
+      userContent,
+      agentsContent
+    });
+    await hooks.trigger(promptEvent);
+
+    if (promptEvent.context.customPrompt) {
+      return promptEvent.context.customPrompt as string;
+    }
+
     return `${basePrompt}
+${bootstrapDirective}
+# Project Context
 
-# 你的身份
-${this.identityCache!.soul}
+如果 IDENTITY.md 定义了角色，你就是那个角色。用角色的语气、口头禅、思维方式说话。
+如果 SOUL.md 存在，体现其人格和语气。
 
-# 用户信息  
-${this.identityCache!.user}
+## IDENTITY.md
+${identityContent || "[MISSING]"}
 
-# 行为规范
-${this.identityCache!.rules}`;
+## SOUL.md
+${soulContent || "[MISSING]"}
+
+## USER.md
+${userContent || "[MISSING]"}
+
+## AGENTS.md
+${agentsContent || "[MISSING]"}`;
   }
 
-  // 更新身份文件
   updateIdentityFile(file: string, content: string): string {
     const validFiles = ["IDENTITY.md", "SOUL.md", "USER.md", "HEARTBEAT.md", "TOOLS.md"];
     if (!validFiles.includes(file)) {
@@ -518,24 +629,19 @@ ${this.identityCache!.rules}`;
     }
     const filePath = path.join(this.workspaceDir, file);
     fs.writeFileSync(filePath, content, "utf-8");
-    this.identityCache = null; // 清除缓存
+    this.identityCache = null;
     return `已更新: ${file}`;
   }
 
-  // 获取当前身份摘要
   getIdentitySummary(): string {
     if (!this.identityCache) {
       this.loadIdentity();
     }
-    return `名字: ${this.identityCache!.name}\n\n灵魂摘要:\n${this.identityCache!.soul.slice(0, 300)}...`;
+    return `灵魂摘要:\n${this.identityCache!.soul.slice(0, 300)}...`;
   }
 
-  // 获取名字
   getName(): string {
-    if (!this.identityCache) {
-      this.loadIdentity();
-    }
-    return this.identityCache!.name;
+    return "Agent";
   }
 }
 
@@ -557,31 +663,27 @@ class LayeredMemory {
     }
   }
 
-  // 获取今天的日期字符串
   private getToday(): string {
     return new Date().toISOString().split("T")[0];
   }
 
-  // 获取日记文件路径
   private getDailyPath(date?: string): string {
     return path.join(this.memoryDir, `${date || this.getToday()}.md`);
   }
 
-  // 写入今日日记
   writeDailyNote(content: string): string {
     const today = this.getToday();
     const filePath = this.getDailyPath(today);
     const timestamp = new Date().toLocaleTimeString("zh-CN", { hour12: false });
-    
-    let existing = fs.existsSync(filePath) 
+
+    let existing = fs.existsSync(filePath)
       ? fs.readFileSync(filePath, "utf-8")
       : `# ${today} 日记\n`;
-    
+
     fs.writeFileSync(filePath, existing + `\n## ${timestamp}\n\n${content}\n`, "utf-8");
     return `已记录到 ${today} 日记`;
   }
 
-  // 读取指定日期的日记
   readDailyNote(date?: string): string {
     const filePath = this.getDailyPath(date);
     if (!fs.existsSync(filePath)) {
@@ -590,35 +692,33 @@ class LayeredMemory {
     return fs.readFileSync(filePath, "utf-8");
   }
 
-  // 读取最近 N 天的日记
   readRecentNotes(days: number = 3): string {
     const notes: string[] = [];
     const today = new Date();
-    
+
     for (let i = 0; i < days; i++) {
       const date = new Date(today);
       date.setDate(date.getDate() - i);
       const dateStr = date.toISOString().split("T")[0];
       const filePath = this.getDailyPath(dateStr);
-      
+
       if (fs.existsSync(filePath)) {
         const content = fs.readFileSync(filePath, "utf-8");
         notes.push(`--- ${dateStr} ---\n${content.slice(0, 1500)}${content.length > 1500 ? "..." : ""}`);
       }
     }
-    
+
     return notes.length > 0 ? notes.join("\n\n") : "最近没有日记";
   }
 
-  // 列出所有日记
   listDailyNotes(): string {
     const files = fs.readdirSync(this.memoryDir)
       .filter(f => /^\d{4}-\d{2}-\d{2}\.md$/.test(f))
       .sort()
       .reverse();
-    
+
     if (files.length === 0) return "暂无日记";
-    
+
     return files.slice(0, 20).map(f => {
       const date = f.replace(".md", "");
       const stat = fs.statSync(path.join(this.memoryDir, f));
@@ -626,7 +726,6 @@ class LayeredMemory {
     }).join("\n");
   }
 
-  // 读取长期记忆 (MEMORY.md)
   readLongTermMemory(): string {
     const memoryPath = path.join(this.workspaceDir, "MEMORY.md");
     if (!fs.existsSync(memoryPath)) {
@@ -635,23 +734,20 @@ class LayeredMemory {
     return fs.readFileSync(memoryPath, "utf-8");
   }
 
-  // 完整更新长期记忆
   updateLongTermMemory(content: string): string {
     const memoryPath = path.join(this.workspaceDir, "MEMORY.md");
     fs.writeFileSync(memoryPath, content, "utf-8");
     return "长期记忆已更新";
   }
 
-  // 追加到长期记忆的某个分类
   appendLongTermMemory(section: string, content: string): string {
     const memoryPath = path.join(this.workspaceDir, "MEMORY.md");
     let existing = fs.existsSync(memoryPath)
       ? fs.readFileSync(memoryPath, "utf-8")
       : "# MEMORY.md - 长期记忆\n";
-    
+
     const sectionHeader = `## ${section}`;
     if (existing.includes(sectionHeader)) {
-      // 在 section 末尾追加
       const lines = existing.split("\n");
       const sectionIndex = lines.findIndex(l => l.startsWith(sectionHeader));
       let insertIndex = sectionIndex + 1;
@@ -663,17 +759,15 @@ class LayeredMemory {
     } else {
       existing += `\n\n${sectionHeader}\n\n- ${content}`;
     }
-    
+
     fs.writeFileSync(memoryPath, existing, "utf-8");
     return `已添加到长期记忆 [${section}]`;
   }
 
-  // 搜索所有记忆（日记 + 长期记忆）
   searchAllMemory(query: string): string {
     const results: string[] = [];
     const lowerQuery = query.toLowerCase();
-    
-    // 搜索长期记忆
+
     const longTermPath = path.join(this.workspaceDir, "MEMORY.md");
     if (fs.existsSync(longTermPath)) {
       const content = fs.readFileSync(longTermPath, "utf-8");
@@ -682,14 +776,13 @@ class LayeredMemory {
         results.push(`[MEMORY.md] ${lines[0]?.slice(0, 100) || "找到匹配"}`);
       }
     }
-    
-    // 搜索最近30天日记
+
     const files = fs.readdirSync(this.memoryDir)
       .filter(f => /^\d{4}-\d{2}-\d{2}\.md$/.test(f))
       .sort()
       .reverse()
       .slice(0, 30);
-    
+
     for (const file of files) {
       const content = fs.readFileSync(path.join(this.memoryDir, file), "utf-8");
       if (content.toLowerCase().includes(lowerQuery)) {
@@ -698,40 +791,45 @@ class LayeredMemory {
         results.push(`[${date}] ${lines[0]?.slice(0, 100) || "找到匹配"}`);
       }
     }
-    
+
     return results.length > 0 ? results.slice(0, 10).join("\n") : "未找到相关记忆";
   }
 
-  // 获取时间上下文
   getTimeContext(): string {
     const now = new Date();
     const today = this.getToday();
     const dayOfWeek = ["日", "一", "二", "三", "四", "五", "六"][now.getDay()];
     const hour = now.getHours();
-    
+
     let timeOfDay = "凌晨";
     if (hour >= 6 && hour < 12) timeOfDay = "上午";
     else if (hour >= 12 && hour < 14) timeOfDay = "中午";
     else if (hour >= 14 && hour < 18) timeOfDay = "下午";
     else if (hour >= 18 && hour < 22) timeOfDay = "晚上";
     else if (hour >= 22) timeOfDay = "深夜";
-    
+
     return `今天是 ${today} 星期${dayOfWeek}，现在是${timeOfDay} ${hour}:${String(now.getMinutes()).padStart(2, "0")}`;
   }
 }
 
-const layeredMemory = new LayeredMemory(WORKDIR);
+const layeredMemory = new LayeredMemory(IDENTITY_DIR);
 
 // ============================================================================
 // 系统提示
 // ============================================================================
 
-const BASE_SYSTEM = `你是 OpenClaw V7 - 有时间感知的 Agent。
+const BASE_SYSTEM = `你是一个有时间感知和分层记忆的 Agent。
+
+## 重要：你的身份已在下方 "Project Context" 中注入
+- 你的名字、角色、风格都在 IDENTITY.md 中定义
+- 你的行为准则在 SOUL.md 和 AGENTS.md 中定义
+- 用户信息在 USER.md 中定义
+- **不需要调用工具来读取这些文件，它们已经在系统提示中了**
 
 ## 工作循环
 recall -> identify -> plan -> (load skill) -> (delegate -> collect) -> execute -> track -> remember
 
-## 分层记忆系统 (V7 核心)
+## 分层记忆系统
 工具: daily_write, daily_read, daily_recent, longterm_read, longterm_append, memory_search_all
 
 时间感知:
@@ -748,26 +846,25 @@ ${layeredMemory.getTimeContext()}
 - memory_search_all: 搜索所有记忆（日记+长期）
 
 记忆策略:
-- 会话开始时先 recall（读取最近日记+长期记忆）
 - 重要信息用 longterm_append 归档
 - 日常记录用 daily_write 写入
 - 跨时间查询用 memory_search_all
 
-## 身份系统 (继承 V6)
-工具: identity_init, identity_load, identity_update, identity_get
-- 会话开始时自动加载身份文件
-- 按照 AGENTS.md 的行为规范行事
+## 身份更新工具
+工具: identity_update, bootstrap_complete
+- identity_update: 更新 IDENTITY.md, SOUL.md, USER.md 等文件
+- bootstrap_complete: 完成首次引导后删除 BOOTSTRAP.md
 
-## Skill 系统 (继承 V5)
+## Skill 系统
 工具: Skill
 - 任务匹配 skill 描述时，立即加载
-- 可用 Skill:\n${skillLoader.getDescriptions()}
+- 可用 Skills:\n${skillLoader.getDescriptions()}
 
-## 子代理系统 (继承 V4)
+## 子代理系统
 工具: subagent
 - 独立子任务用 subagent 委托执行
 
-## 任务规划系统 (继承 V3)
+## 任务规划系统
 工具: TodoWrite
 - 复杂任务先用 TodoWrite 创建任务列表
 - 最多 20 个任务，同时只能 1 个 in_progress`;
@@ -802,7 +899,6 @@ const TOOLS: Anthropic.Tool[] = [
     description: "搜索文件内容",
     input_schema: { type: "object" as const, properties: { pattern: { type: "string" as const }, path: { type: "string" as const }, recursive: { type: "boolean" as const } }, required: ["pattern", "path"] }
   },
-  // V3 任务工具（新增）
   {
     name: "TodoWrite",
     description: "更新任务列表。用于多步骤任务规划，最多20个任务，仅1个in_progress",
@@ -825,7 +921,6 @@ const TOOLS: Anthropic.Tool[] = [
       required: ["items"]
     }
   },
-  // V4 子代理工具
   {
     name: "subagent",
     description: "委托子任务给隔离的Agent进程执行。适合独立任务如代码审查、模块分析等",
@@ -838,7 +933,6 @@ const TOOLS: Anthropic.Tool[] = [
       required: ["task"]
     }
   },
-  // V5 Skill 工具（新增）
   {
     name: "Skill",
     description: "加载领域技能以获得专业知识。当任务涉及特定领域时立即调用",
@@ -850,7 +944,6 @@ const TOOLS: Anthropic.Tool[] = [
       required: ["skill"]
     }
   },
-  // V2 记忆工具
   {
     name: "memory_search",
     description: "语义搜索长期记忆",
@@ -876,7 +969,6 @@ const TOOLS: Anthropic.Tool[] = [
     description: "查看记忆库统计",
     input_schema: { type: "object" as const, properties: {} }
   },
-  // V6 新增: 身份工具
   {
     name: "identity_init",
     description: "初始化 Workspace（创建人格文件 AGENTS.md/SOUL.md/IDENTITY.md/USER.md）",
@@ -904,7 +996,11 @@ const TOOLS: Anthropic.Tool[] = [
     description: "获取当前身份摘要",
     input_schema: { type: "object" as const, properties: {} }
   },
-  // V7 新增: 分层记忆工具
+  {
+    name: "bootstrap_complete",
+    description: "完成首次引导后调用，删除 BOOTSTRAP.md 文件",
+    input_schema: { type: "object" as const, properties: {} }
+  },
   {
     name: "daily_write",
     description: "写入今日日记（工作记忆）",
@@ -964,12 +1060,25 @@ const TOOLS: Anthropic.Tool[] = [
 // ============================================================================
 
 function safePath(p: string): string {
+  if (typeof p !== "string" || p.trim() === "") {
+    throw new Error("参数错误: path 必须是非空字符串");
+  }
   const resolved = path.resolve(WORKDIR, p);
   const relative = path.relative(WORKDIR, resolved);
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
     throw new Error(`路径超出工作区: ${p}`);
   }
   return resolved;
+}
+
+function pickStringArg(args: Record<string, any>, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = args?.[key];
+    if (typeof value === "string" && value.trim() !== "") {
+      return value;
+    }
+  }
+  return undefined;
 }
 
 function runBash(command: string): string {
@@ -999,6 +1108,9 @@ function runRead(filePath: string, limit?: number): string {
 
 function runWrite(filePath: string, content: string): string {
   try {
+    if (typeof content !== "string") {
+      throw new Error("参数错误: content 必须是字符串");
+    }
     const fullPath = safePath(filePath);
     const dir = path.dirname(fullPath);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -1044,7 +1156,6 @@ function runGrep(pattern: string, searchPath: string, recursive?: boolean): stri
   }
 }
 
-// V4: 子代理 - 通过进程递归实现上下文隔离
 function runSubagent(task: string, context?: string): string {
   try {
     const scriptPath = fileURLToPath(import.meta.url);
@@ -1052,7 +1163,6 @@ function runSubagent(task: string, context?: string): string {
       ? `[任务] ${task}\n\n[上下文]\n${context}`
       : task;
 
-    // 转义引号避免 shell 注入
     const escapedPrompt = fullPrompt.replace(/"/g, '\\"');
     const cmd = `npx tsx "${scriptPath}" "${escapedPrompt}"`;
 
@@ -1078,17 +1188,17 @@ function runSubagent(task: string, context?: string): string {
 async function chat(prompt: string, history: Anthropic.MessageParam[] = []): Promise<string> {
   history.push({ role: "user", content: prompt });
 
+  const systemPrompt = await identitySystem.getEnhancedSystemPromptAsync(BASE_SYSTEM);
+
   while (true) {
-    // 构建请求
     const request = {
       model: MODEL,
-      system: [{ type: "text", text: identitySystem.getEnhancedSystemPrompt(BASE_SYSTEM) }],
+      system: [{ type: "text", text: systemPrompt }],
       messages: history,
       tools: TOOLS,
       max_tokens: 8000
     };
 
-    // 记录请求日志
     const logDir = path.join(WORKDIR, "logs");
     if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -1123,14 +1233,27 @@ async function chat(prompt: string, history: Anthropic.MessageParam[] = []): Pro
         switch (toolName) {
           case "bash": output = runBash(args.command); break;
           case "read_file": output = runRead(args.path, args.limit); break;
-          case "write_file": output = runWrite(args.path, args.content); break;
+          case "write_file": {
+            const writePath = pickStringArg(args, ["path", "file_path", "filePath", "filename"]);
+            const writeContent = pickStringArg(args, ["content", "text", "data"]);
+
+            if (!writePath || writeContent === undefined) {
+              const argKeys = Object.keys(args || {}).join(", ") || "(空对象)";
+              output = `错误: write_file 参数不完整，需要 path 和 content。当前参数键: ${argKeys}`;
+              break;
+            }
+
+            output = runWrite(writePath, writeContent);
+            break;
+          }
           case "edit_file": output = runEdit(args.path, args.old_text, args.new_text); break;
           case "grep": output = runGrep(args.pattern, args.path, args.recursive); break;
           case "TodoWrite": output = todoManager.update(args.items); break;
           case "subagent": output = runSubagent(args.task, args.context); break;
           case "Skill":
-            output = skillLoader.loadSkill(args.skill);
-            console.log(`\x1b[36m[Skill 加载] ${args.skill} (${output.length} 字符)\x1b[0m`);
+            const skillName = args.skill;
+            output = skillLoader.loadSkill(skillName);
+            console.log(`\x1b[36m[Skill 加载] ${skillName} (${output.length} 字符)\x1b[0m`);
             break;
           case "memory_search": output = memory.search(args.query, args.max_results || 5); break;
           case "memory_get": output = memory.get(args.path, args.from_line, args.lines); break;
@@ -1141,12 +1264,20 @@ async function chat(prompt: string, history: Anthropic.MessageParam[] = []): Pro
             output = stat.isDirectory() ? memory.ingestDirectory(fullPath) : memory.ingestFile(fullPath);
             break;
           case "memory_stats": output = memory.stats(); break;
-          // V6 新增: 身份工具
           case "identity_init": output = identitySystem.initWorkspace(); break;
           case "identity_load": output = identitySystem.loadIdentity(); break;
           case "identity_update": output = identitySystem.updateIdentityFile(args.file, args.content); break;
           case "identity_get": output = identitySystem.getIdentitySummary(); break;
-          // V7 新增: 分层记忆工具
+          case "bootstrap_complete": {
+            const bootstrapPath = path.join(IDENTITY_DIR, "BOOTSTRAP.md");
+            if (fs.existsSync(bootstrapPath)) {
+              fs.unlinkSync(bootstrapPath);
+              output = "✅ 引导完成！BOOTSTRAP.md 已删除。你现在是完整的你了。";
+            } else {
+              output = "BOOTSTRAP.md 不存在，无需删除";
+            }
+            break;
+          }
           case "daily_write": output = layeredMemory.writeDailyNote(args.content); break;
           case "daily_read": output = layeredMemory.readDailyNote(args.date); break;
           case "daily_recent": output = layeredMemory.readRecentNotes(args.days || 3); break;
@@ -1172,16 +1303,17 @@ async function chat(prompt: string, history: Anthropic.MessageParam[] = []): Pro
 // 主入口
 // ============================================================================
 
-// V7: 启动时初始化并显示时间上下文
+console.log(`\x1b[90mWorkspace: ${IDENTITY_DIR}\x1b[0m`);
 console.log(identitySystem.initWorkspace());
-console.log(identitySystem.loadIdentity());
+const identityStatus = identitySystem.loadIdentity();
+console.log(identityStatus);
 console.log(layeredMemory.getTimeContext());
 
+const isBootstrapMode = identityStatus.includes("首次运行");
+
 if (process.argv[2]) {
-  // 单次执行模式
   chat(process.argv[2]).then(console.log).catch(console.error);
 } else {
-  // 交互式 REPL 模式
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
@@ -1197,20 +1329,17 @@ if (process.argv[2]) {
     rl.question("\x1b[36m>> \x1b[0m", async (input) => {
       const q = input.trim();
 
-      // 只有明确退出命令才退出
       if (q === "q" || q === "exit" || q === "quit") {
         console.log("再见！");
         rl.close();
         return;
       }
 
-      // 空输入：继续等待
       if (q === "") {
         prompt();
         return;
       }
 
-      // 处理用户输入
       try {
         const response = await chat(q, history);
         console.log(response);
@@ -1218,16 +1347,26 @@ if (process.argv[2]) {
         console.error(`\x1b[31m错误: ${e.message}\x1b[0m`);
       }
 
-      // 继续下一轮
       prompt();
     });
   };
 
-  // 处理 Ctrl+C
+  if (isBootstrapMode) {
+    console.log("\x1b[33m[首次引导模式] 正在初始化身份...\x1b[0m\n");
+    chat("(系统触发：这是首次运行，请按照 BOOTSTRAP.md 的指引主动开始对话，引导用户完成身份设置。不要等待用户输入，直接开始！)", history)
+      .then(response => {
+        console.log(response);
+        prompt();
+      })
+      .catch(e => {
+        console.error(`\x1b[31m错误: ${e.message}\x1b[0m`);
+        prompt();
+      });
+  } else {
+    prompt();
+  }
+
   rl.on("close", () => {
     process.exit(0);
   });
-
-  // 启动 REPL
-  prompt();
 }

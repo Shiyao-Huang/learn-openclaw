@@ -571,7 +571,7 @@ async function chat(prompt: string, history: Anthropic.MessageParam[] = []): Pro
           case "Skill":
             // 支持 "list" 特殊命令列出所有可用技能
             if (args.skill === "list") {
-              const skills = skillLoader.listSkills();
+              const skillList = skillLoader.listSkills();
               output = `可用技能:\n${skillLoader.getDescriptions()}\n\n使用 Skill 工具加载具体技能，如: Skill({ skill: "pdf" })`;
             } else {
               output = skillLoader.loadSkill(args.skill);

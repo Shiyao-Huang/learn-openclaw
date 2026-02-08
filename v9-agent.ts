@@ -72,7 +72,7 @@ class LocalMemory {
   private docs: Map<string, MemoryDoc> = new Map();
 
   constructor() {
-    this.memoryDir = path.join(WORKDIR, "memory");
+    this.memoryDir = path.join(IDENTITY_DIR, "memory");
     this.indexFile = path.join(this.memoryDir, ".index.json");
     this.load();
   }
@@ -409,7 +409,7 @@ function loadPersonaTemplate(filename: string): string {
 
 class IdentitySystem {
   private workspaceDir: string;
-  private identityCache: { name: string; soul: string; user: string; rules: string } | null = null;
+  private identityCache: { name: string; identity: string; soul: string; user: string; rules: string } | null = null;
 
   constructor(workspaceDir: string) {
     this.workspaceDir = workspaceDir;
@@ -462,28 +462,21 @@ class IdentitySystem {
         : `(${file} 不存在)`;
     }
 
-    // 提取名字 (支持 **名字** 和 **Name**，中英文冒号)
-    const nameMatch = contents["IDENTITY.md"].match(/\*\*(名字|Name)\*\*[：:]\s*(.+)/);
-    const rawName = nameMatch ? nameMatch[2].trim() : "";
-    // 过滤掉占位符文本
-    const name = (rawName && !rawName.startsWith("_（") && !rawName.startsWith("_("))
-      ? rawName
-      : "";
-
     this.identityCache = {
-      name: name || "Assistant",
+      name: "Agent", // 仅用于 REPL 显示，AI 从 IDENTITY.md 自己理解身份
+      identity: contents["IDENTITY.md"],
       soul: contents["SOUL.md"],
       user: contents["USER.md"],
       rules: contents["AGENTS.md"]
     };
 
-    // 检查是否需要首次引导：BOOTSTRAP.md 存在且名字未设置
+    // 检查是否需要首次引导：只看 BOOTSTRAP.md 是否存在
     const bootstrapPath = path.join(this.workspaceDir, "BOOTSTRAP.md");
-    const needsBootstrap = fs.existsSync(bootstrapPath) && !name;
+    const needsBootstrap = fs.existsSync(bootstrapPath);
 
     return needsBootstrap
       ? `🌟 首次运行！请与我对话完成身份设置。`
-      : `身份加载完成: ${this.identityCache.name}`;
+      : `身份加载完成`;
   }
 
   // 获取增强的系统提示（注入身份信息）
@@ -494,7 +487,13 @@ class IdentitySystem {
 
     return `${basePrompt}
 
+如果 IDENTITY.md 定义了角色，你就是那个角色。用角色的语气、口头禅、思维方式说话。
+如果 SOUL.md 存在，体现其人格和语气。
+
 # 你的身份
+${this.identityCache!.identity}
+
+# 你的灵魂
 ${this.identityCache!.soul}
 
 # 用户信息  
@@ -521,15 +520,12 @@ ${this.identityCache!.rules}`;
     if (!this.identityCache) {
       this.loadIdentity();
     }
-    return `名字: ${this.identityCache!.name}\n\n灵魂摘要:\n${this.identityCache!.soul.slice(0, 300)}...`;
+    return `灵魂摘要:\n${this.identityCache!.soul.slice(0, 300)}...`;
   }
 
-  // 获取名字
+  // 获取名字（仅用于 REPL 显示）
   getName(): string {
-    if (!this.identityCache) {
-      this.loadIdentity();
-    }
-    return this.identityCache!.name;
+    return "Agent";
   }
 }
 
@@ -714,7 +710,7 @@ class LayeredMemory {
   }
 }
 
-const layeredMemory = new LayeredMemory(WORKDIR);
+const layeredMemory = new LayeredMemory(IDENTITY_DIR);
 
 // ============================================================================
 // V8 新增: Heartbeat 系统 - 主动性与周期检查
@@ -812,7 +808,7 @@ class HeartbeatSystem {
   }
 }
 
-const heartbeatSystem = new HeartbeatSystem(WORKDIR);
+const heartbeatSystem = new HeartbeatSystem(IDENTITY_DIR);
 
 // ============================================================================
 // V9 新增: Session 系统 - 多会话管理
@@ -941,7 +937,7 @@ class SessionManager {
   }
 }
 
-const sessionManager = new SessionManager(WORKDIR);
+const sessionManager = new SessionManager(IDENTITY_DIR);
 
 // ============================================================================
 // 系统提示
@@ -995,7 +991,7 @@ ${layeredMemory.getTimeContext()}
 ## Skill 系统 (继承 V5)
 工具: Skill
 - 任务匹配 skill 描述时，立即加载
-- 可用 Skill:\n${skillLoader.getDescriptions()}
+- 可用 Skills:\n${skillLoader.getDescriptions()}
 
 ## 子代理系统 (继承 V4)
 工具: subagent
@@ -1415,8 +1411,9 @@ async function chat(prompt: string, history: Anthropic.MessageParam[] = []): Pro
           case "TodoWrite": output = todoManager.update(args.items); break;
           case "subagent": output = runSubagent(args.task, args.context); break;
           case "Skill":
-            output = skillLoader.loadSkill(args.skill);
-            console.log(`\x1b[36m[Skill 加载] ${args.skill} (${output.length} 字符)\x1b[0m`);
+            const skillName = args.skill;
+            output = skillLoader.loadSkill(skillName);
+            console.log(`\x1b[36m[Skill 加载] ${skillName} (${output.length} 字符)\x1b[0m`);
             break;
           case "memory_search": output = memory.search(args.query, args.max_results || 5); break;
           case "memory_get": output = memory.get(args.path, args.from_line, args.lines); break;

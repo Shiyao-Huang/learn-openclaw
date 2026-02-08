@@ -13,7 +13,7 @@
  * - 读取 HEARTBEAT.md 获取检查清单
  * - 深夜 (23:00-08:00) 静默模式
  * - 有重要事项时才主动通知
- *
+import * as net from "net"; *
  * 演进路线:
  * V0: bash 即一切
  * V1: 5个基础工具
@@ -72,7 +72,7 @@ class LocalMemory {
   private docs: Map<string, MemoryDoc> = new Map();
 
   constructor() {
-    this.memoryDir = path.join(WORKDIR, "memory");
+    this.memoryDir = path.join(IDENTITY_DIR, "memory");
     this.indexFile = path.join(this.memoryDir, ".index.json");
     this.load();
   }
@@ -409,7 +409,7 @@ function loadPersonaTemplate(filename: string): string {
 
 class IdentitySystem {
   private workspaceDir: string;
-  private identityCache: { name: string; soul: string; user: string; rules: string } | null = null;
+  private identityCache: { name: string; identity: string; soul: string; user: string; rules: string } | null = null;
 
   constructor(workspaceDir: string) {
     this.workspaceDir = workspaceDir;
@@ -426,7 +426,17 @@ class IdentitySystem {
       created.push(path.basename(this.workspaceDir) + "/");
     }
 
+    const coreFiles = PERSONA_FILES.filter(f => f !== "BOOTSTRAP.md");
+    const isBrandNewWorkspace = coreFiles.every(filename => {
+      const filePath = path.join(this.workspaceDir, filename);
+      return !fs.existsSync(filePath);
+    });
+
     for (const filename of PERSONA_FILES) {
+      if (filename === "BOOTSTRAP.md" && !isBrandNewWorkspace) {
+        continue;
+      }
+
       const filePath = path.join(this.workspaceDir, filename);
       if (!fs.existsSync(filePath)) {
         const content = loadPersonaTemplate(filename);
@@ -462,28 +472,21 @@ class IdentitySystem {
         : `(${file} 不存在)`;
     }
 
-    // 提取名字 (支持 **名字** 和 **Name**，中英文冒号)
-    const nameMatch = contents["IDENTITY.md"].match(/\*\*(名字|Name)\*\*[：:]\s*(.+)/);
-    const rawName = nameMatch ? nameMatch[2].trim() : "";
-    // 过滤掉占位符文本
-    const name = (rawName && !rawName.startsWith("_（") && !rawName.startsWith("_("))
-      ? rawName
-      : "";
-
     this.identityCache = {
-      name: name || "Assistant",
+      name: "Agent", // 仅用于 REPL 显示，AI 从 IDENTITY.md 自己理解身份
+      identity: contents["IDENTITY.md"],
       soul: contents["SOUL.md"],
       user: contents["USER.md"],
       rules: contents["AGENTS.md"]
     };
 
-    // 检查是否需要首次引导：BOOTSTRAP.md 存在且名字未设置
+    // 检查是否需要首次引导：只看 BOOTSTRAP.md 是否存在
     const bootstrapPath = path.join(this.workspaceDir, "BOOTSTRAP.md");
-    const needsBootstrap = fs.existsSync(bootstrapPath) && !name;
+    const needsBootstrap = fs.existsSync(bootstrapPath);
 
     return needsBootstrap
       ? `🌟 首次运行！请与我对话完成身份设置。`
-      : `身份加载完成: ${this.identityCache.name}`;
+      : `身份加载完成`;
   }
 
   // 获取增强的系统提示（注入身份信息）
@@ -494,7 +497,13 @@ class IdentitySystem {
 
     return `${basePrompt}
 
+如果 IDENTITY.md 定义了角色，你就是那个角色。用角色的语气、口头禅、思维方式说话。
+如果 SOUL.md 存在，体现其人格和语气。
+
 # 你的身份
+${this.identityCache!.identity}
+
+# 你的灵魂
 ${this.identityCache!.soul}
 
 # 用户信息  
@@ -521,15 +530,12 @@ ${this.identityCache!.rules}`;
     if (!this.identityCache) {
       this.loadIdentity();
     }
-    return `名字: ${this.identityCache!.name}\n\n灵魂摘要:\n${this.identityCache!.soul.slice(0, 300)}...`;
+    return `灵魂摘要:\n${this.identityCache!.soul.slice(0, 300)}...`;
   }
 
-  // 获取名字
+  // 获取名字（仅用于 REPL 显示）
   getName(): string {
-    if (!this.identityCache) {
-      this.loadIdentity();
-    }
-    return this.identityCache!.name;
+    return "Agent";
   }
 }
 
@@ -714,7 +720,7 @@ class LayeredMemory {
   }
 }
 
-const layeredMemory = new LayeredMemory(WORKDIR);
+const layeredMemory = new LayeredMemory(IDENTITY_DIR);
 
 // ============================================================================
 // V8 新增: Heartbeat 系统 - 主动性与周期检查
@@ -812,7 +818,7 @@ class HeartbeatSystem {
   }
 }
 
-const heartbeatSystem = new HeartbeatSystem(WORKDIR);
+const heartbeatSystem = new HeartbeatSystem(IDENTITY_DIR);
 
 // ============================================================================
 // 系统提示
@@ -859,7 +865,7 @@ ${layeredMemory.getTimeContext()}
 ## Skill 系统 (继承 V5)
 工具: Skill
 - 任务匹配 skill 描述时，立即加载
-- 可用 Skill:\n${skillLoader.getDescriptions()}
+- 可用 Skills:\n${skillLoader.getDescriptions()}
 
 ## 子代理系统 (继承 V4)
 工具: subagent
@@ -1002,6 +1008,11 @@ const TOOLS: Anthropic.Tool[] = [
     description: "获取当前身份摘要",
     input_schema: { type: "object" as const, properties: {} }
   },
+  {
+    name: "bootstrap_complete",
+    description: "完成首次引导后删除 BOOTSTRAP.md",
+    input_schema: { type: "object" as const, properties: {} }
+  },
   // V7 新增: 分层记忆工具
   {
     name: "daily_write",
@@ -1088,12 +1099,25 @@ const TOOLS: Anthropic.Tool[] = [
 // ============================================================================
 
 function safePath(p: string): string {
+  if (typeof p !== "string" || p.trim() === "") {
+    throw new Error("参数错误: path 必须是非空字符串");
+  }
   const resolved = path.resolve(WORKDIR, p);
   const relative = path.relative(WORKDIR, resolved);
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
     throw new Error(`路径超出工作区: ${p}`);
   }
   return resolved;
+}
+
+function pickStringArg(args: Record<string, any>, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = args?.[key];
+    if (typeof value === "string" && value.trim() !== "") {
+      return value;
+    }
+  }
+  return undefined;
 }
 
 function runBash(command: string): string {
@@ -1123,6 +1147,9 @@ function runRead(filePath: string, limit?: number): string {
 
 function runWrite(filePath: string, content: string): string {
   try {
+    if (typeof content !== "string") {
+      throw new Error("参数错误: content 必须是字符串");
+    }
     const fullPath = safePath(filePath);
     const dir = path.dirname(fullPath);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -1247,14 +1274,27 @@ async function chat(prompt: string, history: Anthropic.MessageParam[] = []): Pro
         switch (toolName) {
           case "bash": output = runBash(args.command); break;
           case "read_file": output = runRead(args.path, args.limit); break;
-          case "write_file": output = runWrite(args.path, args.content); break;
+          case "write_file": {
+            const writePath = pickStringArg(args, ["path", "file_path", "filePath", "filename"]);
+            const writeContent = pickStringArg(args, ["content", "text", "data"]);
+
+            if (!writePath || writeContent === undefined) {
+              const argKeys = Object.keys(args || {}).join(", ") || "(空对象)";
+              output = `错误: write_file 参数不完整，需要 path 和 content。当前参数键: ${argKeys}`;
+              break;
+            }
+
+            output = runWrite(writePath, writeContent);
+            break;
+          }
           case "edit_file": output = runEdit(args.path, args.old_text, args.new_text); break;
           case "grep": output = runGrep(args.pattern, args.path, args.recursive); break;
           case "TodoWrite": output = todoManager.update(args.items); break;
           case "subagent": output = runSubagent(args.task, args.context); break;
           case "Skill":
-            output = skillLoader.loadSkill(args.skill);
-            console.log(`\x1b[36m[Skill 加载] ${args.skill} (${output.length} 字符)\x1b[0m`);
+            const skillName = args.skill;
+            output = skillLoader.loadSkill(skillName);
+            console.log(`\x1b[36m[Skill 加载] ${skillName} (${output.length} 字符)\x1b[0m`);
             break;
           case "memory_search": output = memory.search(args.query, args.max_results || 5); break;
           case "memory_get": output = memory.get(args.path, args.from_line, args.lines); break;
@@ -1270,6 +1310,16 @@ async function chat(prompt: string, history: Anthropic.MessageParam[] = []): Pro
           case "identity_load": output = identitySystem.loadIdentity(); break;
           case "identity_update": output = identitySystem.updateIdentityFile(args.file, args.content); break;
           case "identity_get": output = identitySystem.getIdentitySummary(); break;
+          case "bootstrap_complete": {
+            const bootstrapPath = path.join(IDENTITY_DIR, "BOOTSTRAP.md");
+            if (fs.existsSync(bootstrapPath)) {
+              fs.unlinkSync(bootstrapPath);
+              output = "✅ 引导完成！BOOTSTRAP.md 已删除。你现在是完整的你了。";
+            } else {
+              output = "BOOTSTRAP.md 不存在，无需删除";
+            }
+            break;
+          }
           // V7 新增: 分层记忆工具
           case "daily_write": output = layeredMemory.writeDailyNote(args.content); break;
           case "daily_read": output = layeredMemory.readDailyNote(args.date); break;
@@ -1299,65 +1349,314 @@ async function chat(prompt: string, history: Anthropic.MessageParam[] = []): Pro
 }
 
 // ============================================================================
+// V8 新增: 心跳检测与响应
+// ============================================================================
+
+const TRIGGER_FILE = path.join(WORKDIR, ".heartbeat.trigger");
+const IS_HEARTBEAT_MODE = process.argv[2] === "HEARTBEAT_TRIGGER" || process.env.OPENCLAW_HEARTBEAT === "1";
+
+// 检查是否是心跳触发
+function isHeartbeatTrigger(): boolean {
+  if (IS_HEARTBEAT_MODE) return true;
+  if (!fs.existsSync(TRIGGER_FILE)) return false;
+  
+  try {
+    const trigger = JSON.parse(fs.readFileSync(TRIGGER_FILE, "utf-8"));
+    const age = Date.now() - trigger.timestamp;
+    // 触发文件5分钟内有效
+    return age < 5 * 60 * 1000;
+  } catch {
+    return false;
+  }
+}
+
+// 执行心跳检查
+async function runHeartbeatCheck(): Promise<string> {
+  console.log("\n🫀 收到心跳信号，执行检查...\n");
+  
+  const history: Anthropic.MessageParam[] = [];
+  const result = await chat(
+    "HEARTBEAT_TRIGGER: 读取 HEARTBEAT.md 检查清单，执行必要的维护任务。如果没有需要处理的，回复 HEARTBEAT_OK。",
+    history
+  );
+  
+  return result;
+}
+
+// ============================================================================
 // 主入口
 // ============================================================================
 
-// V7: 启动时初始化并显示时间上下文
-console.log(identitySystem.initWorkspace());
-console.log(identitySystem.loadIdentity());
-console.log(layeredMemory.getTimeContext());
 
-if (process.argv[2]) {
-  // 单次执行模式
-  chat(process.argv[2]).then(console.log).catch(console.error);
-} else {
-  // 交互式 REPL 模式
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-    terminal: true
-  });
-  const history: Anthropic.MessageParam[] = [];
+// ============================================================================
+// V8 新增: 常驻 Agent 核心 - 混合模式（交互 + 心跳）
+// ============================================================================
 
-  console.log(`\nOpenClaw V8 - 心跳主动性 Agent (${identitySystem.getName()})`);
-  console.log(`${memory.stats()} | Skill: ${skillLoader.count} 个 | Heartbeat: 就绪`);
-  console.log(`输入 'q' 或 'exit' 退出，空行继续等待输入\n`);
+import * as net from "net";
 
-  const prompt = () => {
-    rl.question("\x1b[36m>> \x1b[0m", async (input) => {
-      const q = input.trim();
+// IPC 配置（放在类外部）
+const IPC_SOCKET_PATH = path.join(WORKDIR, ".openclaw.ipc");
+const PID_FILE = path.join(WORKDIR, ".openclaw.pid");
+const DEFAULT_HEARTBEAT_INTERVAL = 30 * 60 * 1000;
 
-      // 只有明确退出命令才退出
-      if (q === "q" || q === "exit" || q === "quit") {
-        console.log("再见！");
-        rl.close();
-        return;
+class ResidentAgent {
+  private running = false;
+  private heartbeatTimer: NodeJS.Timeout | null = null;
+  private server: net.Server | null = null;
+  private rl: readline.Interface | null = null;
+  private history: Anthropic.MessageParam[] = [];
+  private interactive = false;
+  private heartbeatInterval: number;
+
+  constructor(heartbeatIntervalMs: number = DEFAULT_HEARTBEAT_INTERVAL) {
+    this.heartbeatInterval = heartbeatIntervalMs;
+  }
+
+  async start(options: { daemon?: boolean; interactive?: boolean } = {}) {
+    this.interactive = options.interactive ?? !options.daemon;
+    fs.writeFileSync(PID_FILE, process.pid.toString());
+    await this.startIPCServer();
+    this.scheduleHeartbeat();
+
+    console.log(`\n🫀 OpenClaw V8 已启动 (PID: ${process.pid})`);
+    console.log(`   模式: ${this.interactive ? "交互+心跳" : "后台常驻"}`);
+    console.log(`   IPC: ${IPC_SOCKET_PATH}`);
+    console.log(`   心跳间隔: ${this.heartbeatInterval / 60000} 分钟\n`);
+
+    if (this.interactive) {
+      await this.startInteractiveMode();
+    } else {
+      this.running = true;
+      while (this.running) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
       }
+    }
+  }
 
-      // 空输入：继续等待
-      if (q === "") {
-        prompt();
-        return;
-      }
-
-      // 处理用户输入
-      try {
-        const response = await chat(q, history);
-        console.log(response);
-      } catch (e: any) {
-        console.error(`\x1b[31m错误: ${e.message}\x1b[0m`);
-      }
-
-      // 继续下一轮
-      prompt();
-    });
-  };
-
-  // 处理 Ctrl+C
-  rl.on("close", () => {
+  stop() {
+    console.log("\n🫀 正在停止 Agent...");
+    this.running = false;
+    if (this.heartbeatTimer) clearTimeout(this.heartbeatTimer);
+    if (this.server) this.server.close();
+    if (this.rl) this.rl.close();
+    if (fs.existsSync(PID_FILE)) fs.unlinkSync(PID_FILE);
+    if (fs.existsSync(IPC_SOCKET_PATH)) fs.unlinkSync(IPC_SOCKET_PATH);
+    console.log("再见！");
     process.exit(0);
-  });
+  }
 
-  // 启动 REPL
-  prompt();
+  private async startIPCServer() {
+    if (fs.existsSync(IPC_SOCKET_PATH)) {
+      try { fs.unlinkSync(IPC_SOCKET_PATH); } catch {}
+    }
+
+    this.server = net.createServer((socket) => {
+      socket.on("data", (data) => {
+        const msg = data.toString().trim();
+        if (msg === "HEARTBEAT") {
+          console.log("\n🫀 [IPC] 收到外部心跳信号");
+          this.executeHeartbeat();
+        } else if (msg === "STATUS") {
+          socket.write(`OK|PID:${process.pid}|Heartbeat:${heartbeatSystem.getStatus()}`);
+        } else if (msg === "STOP") {
+          socket.write("OK|Stopping");
+          setTimeout(() => this.stop(), 100);
+        }
+      });
+    });
+
+    return new Promise<void>((resolve) => {
+      this.server!.listen(IPC_SOCKET_PATH, () => {
+        console.log(`[IPC] 服务器已启动: ${IPC_SOCKET_PATH}`);
+        resolve();
+      });
+    });
+  }
+
+  private scheduleHeartbeat() {
+    const run = async () => {
+      if (!heartbeatSystem.shouldDisturb()) {
+        console.log("\n🫀 [定时] 深夜静默，跳过心跳");
+      } else {
+        await this.executeHeartbeat();
+      }
+      this.heartbeatTimer = setTimeout(run, this.heartbeatInterval);
+    };
+    this.heartbeatTimer = setTimeout(run, 10000);
+  }
+
+  private async executeHeartbeat() {
+    console.log("\n🫀 执行心跳检查...");
+    try {
+      const result = await runHeartbeatCheck();
+      console.log(`   结果: ${result.slice(0, 200)}${result.length > 200 ? '...' : ''}`);
+      if (this.interactive && !result.includes("HEARTBEAT_OK") && !result.includes("静默")) {
+        console.log("\n⚠️  心跳发现需要处理的事项！");
+        console.log(result);
+      }
+    } catch (e: any) {
+      console.error("   错误:", e.message);
+    }
+  }
+
+  private async startInteractiveMode() {
+    this.rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+      terminal: true
+    });
+
+    console.log(`OpenClaw V8 - 交互模式`);
+    console.log(`命令: 'q' 退出 | 'heartbeat' 手动心跳 | 'status' 查看状态`);
+    console.log(`输入你的问题开始对话\n`);
+
+    const ask = () => {
+      this.rl!.question("\x1b[36m>> \x1b[0m", async (input) => {
+        const q = input.trim();
+        if (q === "q" || q === "exit" || q === "quit") { this.stop(); return; }
+        if (q === "heartbeat" || q === "hb") { await this.executeHeartbeat(); ask(); return; }
+        if (q === "status" || q === "st") {
+          console.log(`PID: ${process.pid}`);
+          console.log(heartbeatSystem.getStatus());
+          console.log(`记忆: ${memory.stats()}`);
+          ask(); return;
+        }
+        if (q === "") { ask(); return; }
+        try {
+          const response = await chat(q, this.history);
+          console.log(response);
+        } catch (e: any) { console.error(`\x1b[31m错误: ${e.message}\x1b[0m`); }
+        ask();
+      });
+    };
+    ask();
+    process.on("SIGINT", () => this.stop());
+    process.on("SIGTERM", () => this.stop());
+  }
 }
+
+function isAgentRunning(): boolean {
+  if (!fs.existsSync(PID_FILE) || !fs.existsSync(IPC_SOCKET_PATH)) return false;
+  try {
+    const pid = fs.readFileSync(PID_FILE, "utf-8").trim();
+    process.kill(Number(pid), 0);
+    return true;
+  } catch {
+    try { fs.unlinkSync(PID_FILE); } catch {}
+    try { fs.unlinkSync(IPC_SOCKET_PATH); } catch {}
+    return false;
+  }
+}
+
+function showHelp() {
+  console.log(`
+OpenClaw V8 - 心跳主动性 Agent
+
+用法:
+  tsx v8-agent.ts [选项] [查询]
+
+选项:
+  --daemon, -d       后台常驻模式（无交互，仅心跳）
+  --interactive, -i  交互模式（默认，带后台心跳）
+  --once             单次心跳执行后退出
+  --status, -s       查看运行中的 Agent 状态
+  --stop             停止运行中的 Agent
+  --interval MIN     设置心跳间隔（分钟，默认30）
+  --help, -h         显示帮助
+
+示例:
+  tsx v8-agent.ts                    # 启动交互模式
+  tsx v8-agent.ts --daemon           # 后台常驻
+  tsx v8-agent.ts "查询"              # 单次查询
+  tsx v8-agent.ts --once             # 单次心跳
+  tsx v8-agent.ts --status           # 查看状态
+  tsx v8-agent.ts --stop             # 停止 Agent
+`);
+}
+
+async function sendIPCCommand(cmd: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const client = net.createConnection(IPC_SOCKET_PATH, () => { client.write(cmd); });
+    let response = "";
+    client.on("data", (data) => { response += data.toString(); client.end(); });
+    client.on("end", () => resolve(response));
+    client.on("error", (err) => reject(err));
+    setTimeout(() => reject(new Error("IPC 超时")), 5000);
+  });
+}
+
+async function main() {
+  const args = process.argv.slice(2);
+  const hasFlag = (flags: string[]) => flags.some(f => args.includes(f));
+  const getValue = (flag: string) => {
+    const idx = args.indexOf(flag);
+    return idx >= 0 && idx < args.length - 1 ? args[idx + 1] : undefined;
+  };
+  const getQuery = () => args.filter(a => !a.startsWith("-")).join(" ");
+
+  if (hasFlag(["--help", "-h"])) { showHelp(); return; }
+
+  if (hasFlag(["--status", "-s"])) {
+    if (!isAgentRunning()) { console.log("🫀 Agent 未运行"); return; }
+    try {
+      const status = await sendIPCCommand("STATUS");
+      console.log("🫀 Agent 状态:", status);
+    } catch (e: any) { console.error("无法获取状态:", e.message); }
+    return;
+  }
+
+  if (hasFlag(["--stop"])) {
+    if (!isAgentRunning()) { console.log("🫀 Agent 未运行"); return; }
+    try {
+      const response = await sendIPCCommand("STOP");
+      console.log("🫀 停止命令已发送:", response);
+    } catch (e: any) { console.error("无法停止:", e.message); }
+    return;
+  }
+
+  if (hasFlag(["--once"])) {
+    console.log("🫀 单次心跳模式\n");
+    console.log(identitySystem.initWorkspace());
+    console.log(identitySystem.loadIdentity());
+    console.log(layeredMemory.getTimeContext());
+    const result = await runHeartbeatCheck();
+    console.log("\n🫀 心跳完成:", result);
+    return;
+  }
+
+  const intervalMin = Number(getValue("--interval") || "30");
+  const intervalMs = intervalMin * 60 * 1000;
+
+  if (isAgentRunning()) {
+    const pid = fs.readFileSync(PID_FILE, "utf-8").trim();
+    console.log(`🫀 Agent 已在运行 (PID: ${pid})`);
+    console.log(`   使用 'tsx v8-agent.ts --stop' 停止`);
+    console.log(`   使用 'tsx v8-agent.ts --status' 查看状态`);
+    return;
+  }
+
+  console.log(identitySystem.initWorkspace());
+  console.log(identitySystem.loadIdentity());
+  console.log(layeredMemory.getTimeContext());
+
+  const query = getQuery();
+  if (query && !hasFlag(["--daemon", "-d", "--interactive", "-i"])) {
+    console.log(`\n[单次查询] ${query.slice(0, 50)}${query.length > 50 ? '...' : ''}\n`);
+    const history: Anthropic.MessageParam[] = [];
+    const result = await chat(query, history);
+    console.log(result);
+    return;
+  }
+
+  const agent = new ResidentAgent(intervalMs);
+  if (hasFlag(["--daemon", "-d"])) {
+    await agent.start({ daemon: true });
+  } else {
+    await agent.start({ interactive: true });
+  }
+}
+
+main().catch((e) => {
+  console.error("\x1b[31m致命错误:", e.message, "\x1b[0m");
+  process.exit(1);
+});
