@@ -1,7 +1,8 @@
 {
-  "totalCalls": 1,
+  "totalCalls": 2,
   "toolUsage": {
-    "channel_list": 1
+    "channel_list": 1,
+    "security_policy": 1
   },
   "avgDuration": 0,
   "patterns": [],

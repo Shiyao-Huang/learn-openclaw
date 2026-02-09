@@ -27,7 +27,8 @@
 | V9 | `v9-agent.ts` | 1527 | 35 | Session management |
 | V10 | `v10-agent.ts` | 1782 | 37 | Introspection system |
 | V11 | `v11-agent.ts` | 2324 | 43 | Channel system |
-| **Total** | | **13116** | | |
+| V12 | `v12-agent.ts` | 2766 | 48 | Security system |
+| **Total** | | **15882** | | |
 
 Notes:
 - V5.5-V9 all expose the `Skill` tool with `skill` input.
@@ -75,6 +76,7 @@ npx tsx v0-agent.ts
 - [V9 Session](./docs/v9-会话管理.md)
 - [V10 Introspection](./docs/v10-内省系统.md)
 - [V11 Channel](./docs/v11-Channel系统.md)
+- [V12 Security](./docs/v12-安全策略系统.md)
 - [Evolution Overview](./docs/EVOLUTION.md)
 
 ### Diff guides
@@ -91,6 +93,7 @@ npx tsx v0-agent.ts
 - [V8 -> V9](./docs/evolution/v8-to-v9.md)
 - [V9 -> V10](./docs/evolution/v9-to-v10.md)
 - [V10 -> V11](./docs/evolution/v10-to-v11.md)
+- [V11 -> V12](./docs/evolution/v11-to-v12.md)
 
 ---
 
