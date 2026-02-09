@@ -23,10 +23,10 @@
 | V5.5 | `v5.5-agent.ts` | 776 | 12 | Hook lifecycle |
 | V6 | `v6-agent.ts` | 957 | 14 | Identity + bootstrap |
 | V7 | `v7-agent.ts` | 1372 | 27 | Layered memory |
-| V8 | `v8-agent.ts` | 1671 | 32 | Heartbeat + throttle |
+| V8 | `v8-agent.ts` | 1671 | 30 | Heartbeat + throttle |
 | V9 | `v9-agent.ts` | 1527 | 35 | Session management |
-| V10 | `v10-agent.ts` | 1782 | 39 | Introspection system |
-| **Total** | | **10908** | | |
+| V10 | `v10-agent.ts` | 1782 | 37 | Introspection system |
+| **Total** | | **10792** | | |
 
 Notes:
 - V5.5-V9 all expose the `Skill` tool with `skill` input.
