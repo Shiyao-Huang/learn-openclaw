@@ -1,4 +1,4 @@
-# Learn OpenClaw: V0 -> V9 Evolution (English Mirror)
+# Learn OpenClaw: V0 -> V10 Evolution (English Mirror)
 
 This folder mirrors the Chinese tutorial structure in `../` with concise English chapters.
 
@@ -12,11 +12,12 @@ This folder mirrors the Chinese tutorial structure in `../` with concise English
 | V3 | `v3-agent.ts` | 551 | 11 | Task planning |
 | V4 | `v4-agent.ts` | 599 | 12 | Subagents |
 | V5 | `v5-agent.ts` | 614 | 12 | Skill loading |
-| V5.5 | `v5.5-agent.ts` | 777 | 12 | Hook lifecycle |
-| V6 | `v6-agent.ts` | 1041 | 14 | Identity + bootstrap |
-| V7 | `v7-agent.ts` | 1406 | 27 | Layered memory |
-| V8 | `v8-agent.ts` | 1364 | 31 | Heartbeat |
-| V9 | `v9-agent.ts` | 1531 | 35 | Sessions |
+| V5.5 | `v5.5-agent.ts` | 776 | 12 | Hook lifecycle |
+| V6 | `v6-agent.ts` | 957 | 15 | Identity + bootstrap |
+| V7 | `v7-agent.ts` | 1372 | 28 | Layered memory |
+| V8 | `v8-agent.ts` | 1671 | 33 | Heartbeat |
+| V9 | `v9-agent.ts` | 1527 | 36 | Sessions |
+| V10 | `v10-agent.ts` | 1782 | 39 | Introspection |
 
 ## Chapters
 
@@ -31,6 +32,7 @@ This folder mirrors the Chinese tutorial structure in `../` with concise English
 - [V7: Layered Memory](./v7-layered-memory.md)
 - [V8: Heartbeat System](./v8-heartbeat-system.md)
 - [V9: Session Management](./v9-session-management.md)
+- [V10: Introspection System](./v10-introspection-system.md)
 
 ## Diff guides
 
@@ -44,6 +46,7 @@ This folder mirrors the Chinese tutorial structure in `../` with concise English
 - [V6 -> V7](./evolution/v6-to-v7.md)
 - [V7 -> V8](./evolution/v7-to-v8.md)
 - [V8 -> V9](./evolution/v8-to-v9.md)
+- [V9 -> V10](./evolution/v9-to-v10.md)
 
 ## Chinese source
 
