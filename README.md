@@ -26,7 +26,7 @@
 | V8 | `v8-agent.ts` | 1671 | 32 | Heartbeat + throttle |
 | V9 | `v9-agent.ts` | 1527 | 35 | Session management |
 | V10 | `v10-agent.ts` | 1782 | 39 | Introspection system |
-| **Total** | | **10908** | | |
+| **Total** | | **10792** | | |
 
 Notes:
 - V5.5-V9 all expose the `Skill` tool with `skill` input.
