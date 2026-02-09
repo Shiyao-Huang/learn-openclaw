@@ -245,15 +245,22 @@ describe('V9 SessionManager - 会话管理系统', () => {
       expect(list).toContain('[isolated]');
     });
 
-    it('列表应按最近活跃排序', () => {
+    it('列表应按最近活跃排序', async () => {
       const s1 = manager.createSession();
+      // 等待一小段时间确保时间戳不同
+      await new Promise(resolve => setTimeout(resolve, 10));
       const s2 = manager.createSession();
-      // s2 更新后应该排在前面
+      // s2 更新后应该排在前面（更新也会刷新 lastActiveAt）
       manager.updateHistory(s2.key, [{ role: 'user', content: 'test' }]);
       
       const list = manager.listSessions();
+      // listSessions 返回格式化字符串，s2 应该在 s1 之前出现
       const s1Index = list.indexOf(s1.key);
       const s2Index = list.indexOf(s2.key);
+      // 两个 key 都应该存在于列表中
+      expect(s1Index).toBeGreaterThan(-1);
+      expect(s2Index).toBeGreaterThan(-1);
+      // s2 更新更晚，应该排在前面（索引更小）
       expect(s2Index).toBeLessThan(s1Index);
     });
   });
