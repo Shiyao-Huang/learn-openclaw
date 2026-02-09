@@ -27,8 +27,8 @@
 | V9 | `v9-agent.ts` | 1527 | 35 | Session management |
 | V10 | `v10-agent.ts` | 1782 | 37 | Introspection system |
 | V11 | `v11-agent.ts` | 2324 | 43 | Channel system |
-| V12 | `v12-agent.ts` | 2766 | 48 | Security system |
-| **Total** | | **15882** | | |
+| V12 | `v12-agent.ts` | 2766 | 50 | Security system |
+| **Total** | | **15897** | | |
 
 Notes:
 - V5.5-V9 all expose the `Skill` tool with `skill` input.
