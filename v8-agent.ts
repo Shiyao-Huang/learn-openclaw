@@ -1398,6 +1398,7 @@ import * as net from "net";
 const IPC_SOCKET_PATH = path.join(WORKDIR, ".openclaw.ipc");
 const PID_FILE = path.join(WORKDIR, ".openclaw.pid");
 const DEFAULT_HEARTBEAT_INTERVAL = 30 * 60 * 1000;
+const MIN_HEARTBEAT_GAP = 60 * 1000; // 最小心跳间隔 1 分钟（防止频繁触发）
 
 class ResidentAgent {
   private running = false;
@@ -1407,6 +1408,7 @@ class ResidentAgent {
   private history: Anthropic.MessageParam[] = [];
   private interactive = false;
   private heartbeatInterval: number;
+  private lastHeartbeatTime = 0; // 上次心跳执行时间
 
   constructor(heartbeatIntervalMs: number = DEFAULT_HEARTBEAT_INTERVAL) {
     this.heartbeatInterval = heartbeatIntervalMs;
@@ -1454,6 +1456,12 @@ class ResidentAgent {
       socket.on("data", (data) => {
         const msg = data.toString().trim();
         if (msg === "HEARTBEAT") {
+          const now = Date.now();
+          if (now - this.lastHeartbeatTime < MIN_HEARTBEAT_GAP) {
+            console.log("\n🫀 [IPC] 心跳请求被节流（距上次 <1 分钟）");
+            socket.write("THROTTLED");
+            return;
+          }
           console.log("\n🫀 [IPC] 收到外部心跳信号");
           this.executeHeartbeat();
         } else if (msg === "STATUS") {
@@ -1486,6 +1494,7 @@ class ResidentAgent {
   }
 
   private async executeHeartbeat() {
+    this.lastHeartbeatTime = Date.now(); // 记录执行时间
     console.log("\n🫀 执行心跳检查...");
     try {
       const result = await runHeartbeatCheck();

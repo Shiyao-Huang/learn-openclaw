@@ -16,10 +16,10 @@
 | V5 | `v5-agent.ts` | 614 | 12 | Skill 文档按需加载 |
 | V5.5 | `v5.5-agent.ts` | 776 | 12 | Hook 生命周期扩展 |
 | V6 | `v6-agent.ts` | 957 | 14 | 身份文件化与首次引导 |
-| V7 | `v7-agent.ts` | 1372 | 27 | 分层记忆（daily + longterm） |
-| V8 | `v8-agent.ts` | 1662 | 31 | 心跳主动检查 |
-| V9 | `v9-agent.ts` | 1527 | 35 | 多会话管理与持久化 |
-| V10 | `v10-agent.ts` | 1782 | 39 | 内省与自我观察 |
+| V7 | `v7-agent.ts` | 1372 | 25 | 分层记忆（daily + longterm） |
+| V8 | `v8-agent.ts` | 1671 | 30 | 心跳主动检查 |
+| V9 | `v9-agent.ts` | 1527 | 33 | 多会话管理与持久化 |
+| V10 | `v10-agent.ts` | 1782 | 37 | 内省与自我观察 |
 
 ---
 
