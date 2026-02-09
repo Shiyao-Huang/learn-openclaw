@@ -20,11 +20,12 @@
 | V3 | `v3-agent.ts` | 551 | 11 | Todo-based planning |
 | V4 | `v4-agent.ts` | 599 | 12 | Subagent isolation |
 | V5 | `v5-agent.ts` | 614 | 12 | Skill loading (`Skill`) |
-| V5.5 | `v5.5-agent.ts` | 777 | 12 | Hook lifecycle |
-| V6 | `v6-agent.ts` | 1041 | 14 | Identity + bootstrap |
-| V7 | `v7-agent.ts` | 1406 | 27 | Layered memory |
-| V8 | `v8-agent.ts` | 1364 | 31 | Heartbeat runtime |
-| V9 | `v9-agent.ts` | 1531 | 35 | Session management |
+| V5.5 | `v5.5-agent.ts` | 776 | 12 | Hook lifecycle |
+| V6 | `v6-agent.ts` | 957 | 14 | Identity + bootstrap |
+| V7 | `v7-agent.ts` | 1372 | 27 | Layered memory |
+| V8 | `v8-agent.ts` | 1662 | 31 | Heartbeat runtime |
+| V9 | `v9-agent.ts` | 1527 | 35 | Session management |
+| V10 | `v10-agent.ts` | 1782 | 39 | Introspection system |
 
 Notes:
 - V5.5-V9 all expose the `Skill` tool with `skill` input.
@@ -70,6 +71,7 @@ npx tsx v0-agent.ts
 - [V7 Layered Memory](./docs/v7-分层记忆.md)
 - [V8 Heartbeat](./docs/v8-心跳系统.md)
 - [V9 Session](./docs/v9-会话管理.md)
+- [V10 Introspection](./docs/v10-内省系统.md)
 - [Evolution Overview](./docs/EVOLUTION.md)
 
 ### Diff guides
@@ -84,6 +86,7 @@ npx tsx v0-agent.ts
 - [V6 -> V7](./docs/evolution/v6-to-v7.md)
 - [V7 -> V8](./docs/evolution/v7-to-v8.md)
 - [V8 -> V9](./docs/evolution/v8-to-v9.md)
+- [V9 -> V10](./docs/evolution/v9-to-v10.md)
 
 ---
 
