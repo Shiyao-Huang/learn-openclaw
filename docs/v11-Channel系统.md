@@ -15,17 +15,22 @@ V11 引入 Channel 抽象层，让 Agent 能够：
 
 ```typescript
 interface Channel {
-  id: string;                    // telegram | discord | feishu
+  id: string;                    // telegram | discord | console
   name: string;                  // 显示名称
   capabilities: ChannelCapabilities;
   
   // 生命周期
   start(): Promise<void>;
   stop(): Promise<void>;
+  isRunning(): boolean;
   
   // 消息处理
   send(target: string, message: string): Promise<void>;
   onMessage(handler: MessageHandler): void;
+  
+  // 用户管理
+  getTrustLevel(userId: string): TrustLevel;
+  setTrustLevel(userId: string, level: TrustLevel): void;
 }
 
 interface ChannelCapabilities {
@@ -35,6 +40,7 @@ interface ChannelCapabilities {
   media?: boolean;
   threads?: boolean;
   commands?: boolean;
+  markdown?: boolean;
 }
 ```
 
@@ -59,68 +65,97 @@ interface MessageContext {
 ```typescript
 class ChannelManager {
   private channels: Map<string, Channel> = new Map();
-  private messageHandler?: (ctx: MessageContext) => Promise<void>;
+  private configs: Map<string, ChannelConfig> = new Map();
   
   register(channel: Channel): void;
   unregister(channelId: string): void;
   
-  startAll(): Promise<void>;
+  startAll(): Promise<string>;
   stopAll(): Promise<void>;
   
-  send(channelId: string, target: string, message: string): Promise<void>;
-  broadcast(message: string): Promise<void>;
+  send(channelId: string, target: string, message: string): Promise<string>;
+  broadcast(message: string): Promise<string>;
+  
+  list(): string;
+  status(channelId?: string): string;
+  configure(channelId: string, updates: Partial<ChannelConfig>): string;
   
   onMessage(handler: (ctx: MessageContext) => Promise<void>): void;
 }
 ```
 
-## 实现计划
+### 用户信任等级
 
-### Phase 1: 基础框架
-- [ ] Channel 接口定义
-- [ ] ChannelManager 实现
-- [ ] 消息路由逻辑
+```typescript
+type TrustLevel = 'owner' | 'trusted' | 'normal' | 'restricted';
 
-### Phase 2: Telegram 集成
-- [ ] TelegramChannel 实现
-- [ ] Bot Token 配置
-- [ ] 消息收发测试
+// owner: 完全访问，可执行任何操作
+// trusted: 大部分操作，但不能修改系统配置
+// normal: 基本交互，受限的工具访问
+// restricted: 只读，��能执行任何工具
+```
 
-### Phase 3: Discord 集成
-- [ ] DiscordChannel 实现
-- [ ] Bot 权限配置
-- [ ] 群组/私聊支持
+## 工具列表
 
-### Phase 4: 飞书集成
-- [ ] FeishuChannel 实现
-- [ ] 企业应用配置
-- [ ] 消息卡片支持
+| 工具 | 描述 |
+|------|------|
+| `channel_list` | 列出所有已注册渠道及其状态 |
+| `channel_send` | 向指定渠道发送消息 |
+| `channel_status` | 查看渠道状态 |
+| `channel_config` | 配置渠道参数 |
+| `channel_start` | 启动所有已启用的渠道 |
+| `channel_stop` | 停止所有渠道 |
 
-## 安全考虑
+## 内置渠道
+
+### Console Channel (测试用)
+- ID: `console`
+- 用于本地测试和开发
+- 支持模拟消息接收
+
+### Telegram Channel (骨架)
+- ID: `telegram`
+- 能力: reactions, polls, media, commands, markdown
+- 需要配置 `TELEGRAM_BOT_TOKEN`
+
+### Discord Channel (骨架)
+- ID: `discord`
+- 能力: reactions, threads, media, commands, markdown
+- 需要配置 `DISCORD_BOT_TOKEN`
+
+## 配置示例
+
+```typescript
+// .channels.json
+{
+  "telegram": {
+    "enabled": true,
+    "groupPolicy": "mention-only",
+    "dmPolicy": "all",
+    "trustedUsers": ["user123"]
+  },
+  "discord": {
+    "enabled": false
+  }
+}
+```
+
+## 安全策略
 
 ### 渠道隔离
 - 每个渠道独立的权限配置
 - 群聊 vs 私聊的不同策略
 - 敏感信息不跨渠道泄露
 
-### 用户认证
-```typescript
-interface ChannelUser {
-  channelId: string;
-  userId: string;
-  trustLevel: 'owner' | 'trusted' | 'normal' | 'restricted';
-}
-```
+### 群组策略 (groupPolicy)
+- `all`: 响应所有消息
+- `mention-only`: 只响应 @提及
+- `disabled`: 不响应群组消息
 
-### 命令权限
-```typescript
-interface CommandPolicy {
-  command: string;
-  allowedChannels: string[];
-  allowedChatTypes: ('direct' | 'group')[];
-  minTrustLevel: string;
-}
-```
+### 私聊策略 (dmPolicy)
+- `all`: 响应所有私聊
+- `allowlist`: 只响应白名单用户
+- `disabled`: 不响应私聊
 
 ## 与现有系统集成
 
@@ -133,28 +168,32 @@ interface CommandPolicy {
 - 支持跨渠道会话关联
 
 ### V8 心跳系统
-- 渠道健康��查
+- 渠道健康检查
 - 自动重连机制
 
-## 配置示例
+## 扩展新渠道
+
+实现 `Channel` 接口即可添加新渠道：
 
 ```typescript
-const config = {
-  channels: {
-    telegram: {
-      enabled: true,
-      token: process.env.TELEGRAM_BOT_TOKEN,
-      allowFrom: ['user123', 'group456'],
-      groupPolicy: 'mention-only'
-    },
-    discord: {
-      enabled: true,
-      token: process.env.DISCORD_BOT_TOKEN,
-      guilds: ['guild123'],
-      dmPolicy: 'allowlist'
-    }
-  }
-};
+class MyChannel implements Channel {
+  id = 'my-channel';
+  name = 'My Channel';
+  capabilities = { chatTypes: ['direct'] };
+  
+  async start() { /* 连接逻辑 */ }
+  async stop() { /* 断开逻辑 */ }
+  isRunning() { return this.running; }
+  
+  async send(target, message) { /* 发送逻辑 */ }
+  onMessage(handler) { this.handler = handler; }
+  
+  getTrustLevel(userId) { return 'normal'; }
+  setTrustLevel(userId, level) { /* 存储逻辑 */ }
+}
+
+// 注册
+channelManager.register(new MyChannel());
 ```
 
 ## 参考
@@ -165,4 +204,5 @@ const config = {
 
 ---
 
-*Created: 2026-02-09*
+*Created: 2026-02-10*
+*Lines: ~2324*

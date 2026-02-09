@@ -4,7 +4,7 @@
 
 ---
 
-## 已完成 (V0-V10)
+## 已完成 (V0-V11)
 
 | 版本 | 核心能力 | 状态 |
 |------|----------|------|
@@ -20,34 +20,22 @@
 | V8 | 心跳主动性 | ✅ |
 | V9 | 会话管理 | ✅ |
 | V10 | 内省系统 | ✅ |
+| V11 | Channel 系统 | ✅ |
 
 ---
 
-## 计划中 (V11+)
+## 计划中 (V12+)
 
-### V11: Channel 系统 - 多渠道接入
+### ~~V11: Channel 系统~~ ✅ 已完成
 
-**目标**: Agent 能通过多个社交平台与用户交互
+**实现内容**:
+- Channel 接口和 ChannelManager
+- 内置渠道: Console, Telegram (骨架), Discord (骨架)
+- 用户信任等级: owner/trusted/normal/restricted
+- 渠道配置持久化 (.channels.json)
+- 6 个新工具: channel_list/send/status/config/start/stop
 
-| Channel | 优先级 | 场景 | 复杂度 |
-|---------|--------|------|--------|
-| Discord | 🔴 高 | 社区/群组 | 中 |
-| Telegram | 🔴 高 | 个人/群组 | 低 |
-| 飞书 (Feishu) | 🔴 高 | 国内企业 | 中 |
-| MeltBook | 🟡 后续 | 待定 | - |
-
-**核心设计**:
-```typescript
-interface Channel {
-  name: string;
-  send(message: string): Promise<void>;
-  onMessage(handler: (msg: Message) => void): void;
-  // 权限检查
-  canExecute(action: string, context: Context): boolean;
-}
-```
-
-**参考**: OpenClaw 已有 channel ���现，可借鉴其架构。
+详见: [docs/v11-Channel系统.md](./docs/v11-Channel系统.md)
 
 ---
 
@@ -78,7 +66,7 @@ interface SecurityContext {
 - **群聊**: 更严格，不暴露敏感信息
 - **公开频道**: 最严格，只读模式
 
-#### 3. 审计日��
+#### 3. 审计日志
 
 ```typescript
 interface AuditLog {

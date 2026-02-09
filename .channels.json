@@ -1,0 +1,11 @@
+{
+  "console": {
+    "enabled": false
+  },
+  "telegram": {
+    "enabled": false
+  },
+  "discord": {
+    "enabled": false
+  }
+}

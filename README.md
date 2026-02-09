@@ -26,7 +26,8 @@
 | V8 | `v8-agent.ts` | 1671 | 30 | Heartbeat + throttle |
 | V9 | `v9-agent.ts` | 1527 | 35 | Session management |
 | V10 | `v10-agent.ts` | 1782 | 37 | Introspection system |
-| **Total** | | **10792** | | |
+| V11 | `v11-agent.ts` | 2324 | 43 | Channel system |
+| **Total** | | **13116** | | |
 
 Notes:
 - V5.5-V9 all expose the `Skill` tool with `skill` input.
@@ -73,6 +74,7 @@ npx tsx v0-agent.ts
 - [V8 Heartbeat](./docs/v8-心跳系统.md)
 - [V9 Session](./docs/v9-会话管理.md)
 - [V10 Introspection](./docs/v10-内省系统.md)
+- [V11 Channel](./docs/v11-Channel系统.md)
 - [Evolution Overview](./docs/EVOLUTION.md)
 
 ### Diff guides
@@ -88,6 +90,7 @@ npx tsx v0-agent.ts
 - [V7 -> V8](./docs/evolution/v7-to-v8.md)
 - [V8 -> V9](./docs/evolution/v8-to-v9.md)
 - [V9 -> V10](./docs/evolution/v9-to-v10.md)
+- [V10 -> V11](./docs/evolution/v10-to-v11.md)
 
 ---
 
