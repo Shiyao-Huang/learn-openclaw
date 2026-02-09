@@ -4,7 +4,10 @@
   "type": "module",
   "description": "OpenClaw 渐进学习 - V0 极简实现",
   "scripts": {
-    "v0": "tsx v0_openclaw_agent.ts"
+    "v0": "tsx v0_openclaw_agent.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
@@ -12,7 +15,9 @@
     "dotenv": "^16.4.0"
   },
   "devDependencies": {
+    "@types/node": "^25.2.2",
     "tsx": "^4.0.0",
-    "typescript": "^5.0.0"
+    "typescript": "^5.0.0",
+    "vitest": "^4.0.18"
   }
 }
