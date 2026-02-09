@@ -4,7 +4,7 @@
 [![Node.js](https://img.shields.io/badge/Node.js-18+-green.svg)](https://nodejs.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
-> Incremental tutorial repo: from one-tool agent loop to multi-session runtime.
+> Incremental tutorial repo: from one-tool agent loop to self-evolving runtime.
 
 [中文文档](./README_zh.md)
 
@@ -28,7 +28,8 @@
 | V10 | `v10-agent.ts` | 1782 | 37 | Introspection system |
 | V11 | `v11-agent.ts` | 2324 | 43 | Channel system |
 | V12 | `v12-agent.ts` | 2766 | 50 | Security system |
-| **Total** | | **15897** | | |
+| V13 | `v13-agent.ts` | 3237 | 55 | Self-evolution system |
+| **Total** | | **19134** | | |
 
 Notes:
 - V5.5-V9 all expose the `Skill` tool with `skill` input.
@@ -54,6 +55,7 @@ npx tsx v0-agent.ts
 1. V0-V2: loop + tools + memory
 2. V3-V5.5: planning + delegation + skill/hook architecture
 3. V6-V9: identity + time memory + heartbeat + sessions
+4. V10-V13: introspection + channels + security + evolution
 
 ---
 
@@ -77,6 +79,7 @@ npx tsx v0-agent.ts
 - [V10 Introspection](./docs/v10-内省系统.md)
 - [V11 Channel](./docs/v11-Channel系统.md)
 - [V12 Security](./docs/v12-安全策略系统.md)
+- [V13 Evolution](./docs/v13-自进化系统.md)
 - [Evolution Overview](./docs/EVOLUTION.md)
 
 ### Diff guides
@@ -94,6 +97,7 @@ npx tsx v0-agent.ts
 - [V9 -> V10](./docs/evolution/v9-to-v10.md)
 - [V10 -> V11](./docs/evolution/v10-to-v11.md)
 - [V11 -> V12](./docs/evolution/v11-to-v12.md)
+- [V12 -> V13](./docs/evolution/v12-to-v13.md)
 
 ---
 

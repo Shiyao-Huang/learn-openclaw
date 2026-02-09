@@ -4,7 +4,7 @@
 [![Node.js](https://img.shields.io/badge/Node.js-18+-green.svg)](https://nodejs.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
-> 用渐进式方式学习 Agent：从 1 个工具循环到多会话运行时。
+> 用渐进式方式学习 Agent：从 1 个工具循环到自进化运行时。
 
 [English](./README.md)
 
@@ -28,7 +28,8 @@
 | V10 | `v10-agent.ts` | 1782 | 37 | 内省系统 |
 | V11 | `v11-agent.ts` | 2324 | 43 | Channel 系统 |
 | V12 | `v12-agent.ts` | 2766 | 50 | 安全策略系统 |
-| **合计** | | **15897** | | |
+| V13 | `v13-agent.ts` | 3237 | 55 | 自进化系统 |
+| **合计** | | **19134** | | |
 
 说明：
 - V5.5-V9 对模型暴露的技能工具名统一为 `Skill`，参数为 `skill`。
@@ -54,6 +55,7 @@ npx tsx v0-agent.ts
 1. V0-V2：循环、工具、记忆
 2. V3-V5.5：规划、委托、技能与 Hook
 3. V6-V9：身份、时间记忆、心跳、会话
+4. V10-V13：内省、渠道、安全、进化
 
 ---
 
@@ -75,6 +77,9 @@ npx tsx v0-agent.ts
 - [V8: 心跳系统](./docs/v8-心跳系统.md)
 - [V9: 会话管理](./docs/v9-会话管理.md)
 - [V10: 内省系统](./docs/v10-内省系统.md)
+- [V11: Channel 系统](./docs/v11-Channel系统.md)
+- [V12: 安全策略系统](./docs/v12-安全策略系统.md)
+- [V13: 自进化系统](./docs/v13-自进化系统.md)
 - [总览: EVOLUTION](./docs/EVOLUTION.md)
 
 ### Diff 演进文档
@@ -90,6 +95,9 @@ npx tsx v0-agent.ts
 - [V7 -> V8](./docs/evolution/v7-to-v8.md)
 - [V8 -> V9](./docs/evolution/v8-to-v9.md)
 - [V9 -> V10](./docs/evolution/v9-to-v10.md)
+- [V10 -> V11](./docs/evolution/v10-to-v11.md)
+- [V11 -> V12](./docs/evolution/v11-to-v12.md)
+- [V12 -> V13](./docs/evolution/v12-to-v13.md)
 
 ---
 
