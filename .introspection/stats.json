@@ -1,10 +1,20 @@
 {
-  "totalCalls": 2,
+  "totalCalls": 81,
   "toolUsage": {
-    "channel_list": 1,
-    "security_policy": 1
+    "channel_list": 2,
+    "security_policy": 1,
+    "read_file": 9,
+    "grep": 1,
+    "bash": 44,
+    "write_file": 3,
+    "TodoWrite": 7,
+    "edit_file": 7,
+    "channel_status": 3,
+    "channel_config": 2,
+    "channel_start": 1,
+    "channel_send": 1
   },
-  "avgDuration": 0,
+  "avgDuration": 1089.1111111111113,
   "patterns": [],
   "lastReflection": 0
 }

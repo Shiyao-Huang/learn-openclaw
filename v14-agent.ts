@@ -1,39 +1,31 @@
 #!/usr/bin/env tsx
 /**
- * v11-agent.ts - Channel 系统 (~2100行)
+ * v14-agent.ts - 插件系统 (~4000行)
  *
- * 核心哲学: "一个 Agent，多个入口"
+ * 核心哲学: "动态加载外部能力，让 Agent 可扩展"
  * ================================================
- * V11 在 V10 基础上增加 Channel 系统：
- * - 多渠道接入: Telegram, Discord, 飞书等
- * - 统一消息抽象: 不同平台统一处理
- * - 上下文感知: 根据渠道调整行为
- * - 安全隔离: 群聊/私聊不同策略
+ * V14 在 V13.5 基础上增加 Plugin System：
+ * - 插件接口: 统一的插件定义规范
+ * - 工具热插拔: 运行时加载/卸载工具
+ * - 配置 Schema: 插件配置验证和 UI hints
+ * - 生命周期钩子: 插件可以响应 Agent 事件
  *
- * Channel 能力:
- * - channel_list: 列出所有已注册渠道
- * - channel_send: 向指定渠道发送消息
- * - channel_status: 查看渠道状态
- * - channel_config: 配置渠道参数
+ * Plugin 能力:
+ * - plugin_list: 列出所有已加载插件
+ * - plugin_load: 加载插件
+ * - plugin_unload: 卸载插件
+ * - plugin_config: 查看/更新插件配置
+ * - plugin_info: 查看插件详情
  *
  * 设计原则:
- * - 渠道即插件: 新渠道只需实现 Channel 接口
- * - 消息路由: 根据来源自动选择响应渠道
- * - 权限分层: owner > trusted > normal > restricted
+ * - 模块化: 能力按需加载
+ * - 安全性: 插件权限受控
+ * - 可配置: 每个插件独立配置
+ * - 可追溯: 插件操作有日志
  *
  * 演进路线:
- * V0: bash 即一切
- * V1: 5个基础工具
- * V2: 本地向量记忆
- * V3: 极简任务规划
- * V4: 子代理协调
- * V5: Claw 系统
- * V6: 身份与灵魂
- * V7: 分层记忆
- * V8: 心跳主动性
- * V9: 会话管理
- * V10: 内省系统
- * V11: Channel 系统 (当前)
+ * V0-V13.5: (见 v13.5-agent.ts)
+ * V14: 插件系统 (当前)
  */
 
 import Anthropic from "@anthropic-ai/sdk";
@@ -1612,213 +1604,6 @@ class DiscordChannel implements Channel {
   }
 }
 
-// ============================================================================
-// 飞书渠道实现 - WebSocket 模式 (无需公网IP)
-// ============================================================================
-
-import * as Lark from '@larksuiteoapi/node-sdk';
-
-class FeishuChannel implements Channel {
-  id = 'feishu';
-  name = '飞书';
-  capabilities: ChannelCapabilities = {
-    chatTypes: ['direct', 'group'],
-    reactions: true,
-    media: true,
-    markdown: true,
-  };
-
-  private running = false;
-  private handler?: (ctx: MessageContext) => Promise<void>;
-  private trustLevels: Map<string, TrustLevel> = new Map();
-  
-  // 配置
-  private appId: string;
-  private appSecret: string;
-  
-  // 运行时
-  private client?: Lark.Client;
-  private wsClient?: Lark.WSClient;
-
-  constructor(options?: {
-    appId?: string;
-    appSecret?: string;
-  }) {
-    this.appId = options?.appId || process.env.FEISHU_APP_ID || '';
-    this.appSecret = options?.appSecret || process.env.FEISHU_APP_SECRET || '';
-  }
-
-  async start(): Promise<void> {
-    if (!this.appId || !this.appSecret) {
-      throw new Error('未配置 FEISHU_APP_ID 或 FEISHU_APP_SECRET');
-    }
-
-    // 创建 HTTP 客户端 (用于发送消息)
-    this.client = new Lark.Client({
-      appId: this.appId,
-      appSecret: this.appSecret,
-      appType: Lark.AppType.SelfBuild,
-      domain: Lark.Domain.Feishu,
-    });
-
-    // 创建 WebSocket 客户端 (用于接收消息，无需公网IP)
-    this.wsClient = new Lark.WSClient({
-      appId: this.appId,
-      appSecret: this.appSecret,
-      domain: Lark.Domain.Feishu,
-      loggerLevel: Lark.LoggerLevel.info,
-    });
-
-    // 创建事件分发器
-    const eventDispatcher = new Lark.EventDispatcher({});
-
-    // 注册消息事件处理
-    eventDispatcher.register({
-      'im.message.receive_v1': async (data: any) => {
-        await this.handleMessageEvent(data);
-      },
-    });
-
-    // 启动 WebSocket 连接
-    this.wsClient.start({ eventDispatcher });
-
-    this.running = true;
-    console.log(`\x1b[32m[飞书] 渠道已启动 (WebSocket 模式)\x1b[0m`);
-  }
-
-  async stop(): Promise<void> {
-    // WSClient 没有 stop 方法，设置为 undefined 让 GC 回收
-    this.wsClient = undefined;
-    this.client = undefined;
-    this.running = false;
-    console.log('\x1b[33m[飞书] 渠道已停止\x1b[0m');
-  }
-
-  isRunning(): boolean {
-    return this.running;
-  }
-
-  async send(target: string, message: string): Promise<void> {
-    if (!this.running || !this.client) throw new Error('渠道未运行');
-    
-    // 判断目标类型：以 oc_ 开头是群聊，以 ou_ 开头是用户
-    const receiveIdType = target.startsWith('oc_') ? 'chat_id' : 'open_id';
-    
-    const response = await this.client.im.message.create({
-      params: { receive_id_type: receiveIdType },
-      data: {
-        receive_id: target,
-        msg_type: 'text',
-        content: JSON.stringify({ text: message }),
-      },
-    }) as any;
-
-    if (response.code !== 0) {
-      throw new Error(`飞书发送失败: ${response.msg}`);
-    }
-    
-    console.log(`\x1b[35m[飞书 -> ${target}]\x1b[0m ${message.slice(0, 100)}...`);
-  }
-
-  onMessage(handler: (ctx: MessageContext) => Promise<void>): void {
-    this.handler = handler;
-  }
-
-  getTrustLevel(userId: string): TrustLevel {
-    return this.trustLevels.get(userId) || 'normal';
-  }
-
-  setTrustLevel(userId: string, level: TrustLevel): void {
-    this.trustLevels.set(userId, level);
-  }
-
-  // 处理消息事件
-  private async handleMessageEvent(data: any): Promise<void> {
-    if (!this.handler) return;
-
-    try {
-      const message = data.message;
-      const sender = data.sender;
-
-      // 解析消息内容
-      let text = '';
-      if (message.message_type === 'text') {
-        try {
-          const content = JSON.parse(message.content);
-          text = content.text || '';
-        } catch {
-          text = message.content;
-        }
-      } else if (message.message_type === 'post') {
-        // 富文本消息
-        try {
-          const content = JSON.parse(message.content);
-          text = this.extractTextFromPost(content);
-        } catch {
-          text = '[富文本消息]';
-        }
-      } else {
-        text = `[${message.message_type} 消息]`;
-      }
-
-      // 判断聊天类型
-      const chatType: 'direct' | 'group' = message.chat_type === 'group' ? 'group' : 'direct';
-
-      const ctx: MessageContext = {
-        channel: this.id,
-        chatType,
-        chatId: message.chat_id,
-        userId: sender.sender_id?.open_id || sender.sender_id?.user_id || 'unknown',
-        userName: sender.sender_id?.user_id,
-        messageId: message.message_id,
-        text,
-        replyTo: message.parent_id,
-        timestamp: parseInt(message.create_time) || Date.now(),
-      };
-
-      console.log(`\x1b[36m[飞书 <- ${ctx.userId}]\x1b[0m ${text.slice(0, 100)}...`);
-      await this.handler(ctx);
-    } catch (error: any) {
-      console.error(`\x1b[31m[飞书] 处理消息错误: ${error.message}\x1b[0m`);
-    }
-  }
-
-  // 从富文本消息中提取纯文本
-  private extractTextFromPost(content: any): string {
-    const texts: string[] = [];
-    const post = content.post?.zh_cn || content.post?.en_us || Object.values(content.post || {})[0] as any;
-    
-    if (post?.content) {
-      for (const line of post.content) {
-        for (const element of line) {
-          if (element.tag === 'text') {
-            texts.push(element.text);
-          } else if (element.tag === 'at') {
-            texts.push(`@${element.user_name || element.user_id}`);
-          } else if (element.tag === 'a') {
-            texts.push(element.text || element.href);
-          }
-        }
-      }
-    }
-    
-    return texts.join(' ') || '[富文本消息]';
-  }
-
-  // 回复消息
-  async reply(messageId: string, text: string): Promise<void> {
-    if (!this.client) throw new Error('客户端未初始化');
-    
-    await this.client.im.message.reply({
-      path: { message_id: messageId },
-      data: {
-        msg_type: 'text',
-        content: JSON.stringify({ text }),
-      },
-    });
-  }
-}
-
 // 初始化渠道管理器
 const channelManager = new ChannelManager(WORKDIR);
 
@@ -1826,20 +1611,1684 @@ const channelManager = new ChannelManager(WORKDIR);
 channelManager.register(new ConsoleChannel());
 channelManager.register(new TelegramChannel());
 channelManager.register(new DiscordChannel());
-channelManager.register(new FeishuChannel());
+
+// ============================================================================
+// Security 系统 - V12 新增 (安全策略与审计)
+// ============================================================================
+
+// 工具风险等级
+type ToolRiskLevel = 'safe' | 'confirm' | 'dangerous';
+
+// 审计日志条目
+interface AuditLogEntry {
+  timestamp: number;
+  tool: string;
+  args: Record<string, any>;
+  riskLevel: ToolRiskLevel;
+  userId?: string;
+  channel?: string;
+  chatType?: 'direct' | 'group';
+  decision: 'allowed' | 'denied' | 'confirmed';
+  reason?: string;
+}
+
+// 安全上下文
+interface SecurityContext {
+  userId?: string;
+  channel?: string;
+  chatType?: 'direct' | 'group';
+  trustLevel: TrustLevel;
+}
+
+// 安全策略配置
+interface SecurityPolicy {
+  // 工具风险分类
+  toolRiskLevels: Record<string, ToolRiskLevel>;
+  // 信任等级对应的允许风险
+  trustAllowedRisk: Record<TrustLevel, ToolRiskLevel[]>;
+  // 群聊中禁用的工具
+  groupDenyList: string[];
+  // 敏感数据模式
+  sensitivePatterns: RegExp[];
+  // 是否启用审计
+  auditEnabled: boolean;
+  // 是否需要确认危险操作
+  confirmDangerous: boolean;
+}
+
+// 默认安全策略
+const DEFAULT_SECURITY_POLICY: SecurityPolicy = {
+  toolRiskLevels: {
+    // Safe: 只读操作
+    'read_file': 'safe',
+    'grep': 'safe',
+    'memory_search': 'safe',
+    'memory_get': 'safe',
+    'memory_stats': 'safe',
+    'identity_get': 'safe',
+    'daily_read': 'safe',
+    'daily_recent': 'safe',
+    'daily_list': 'safe',
+    'longterm_read': 'safe',
+    'time_context': 'safe',
+    'heartbeat_get': 'safe',
+    'heartbeat_status': 'safe',
+    'session_list': 'safe',
+    'introspect_stats': 'safe',
+    'introspect_patterns': 'safe',
+    'introspect_logs': 'safe',
+    'channel_list': 'safe',
+    'channel_status': 'safe',
+    'security_audit': 'safe',
+    'security_policy': 'safe',
+    
+    // Confirm: 写操作
+    'write_file': 'confirm',
+    'edit_file': 'confirm',
+    'memory_append': 'confirm',
+    'memory_ingest': 'confirm',
+    'identity_update': 'confirm',
+    'daily_write': 'confirm',
+    'longterm_update': 'confirm',
+    'longterm_append': 'confirm',
+    'heartbeat_update': 'confirm',
+    'heartbeat_record': 'confirm',
+    'session_create': 'confirm',
+    'session_delete': 'confirm',
+    'channel_send': 'confirm',
+    'channel_config': 'confirm',
+    'channel_start': 'confirm',
+    'channel_stop': 'confirm',
+    'TodoWrite': 'confirm',
+    'Claw': 'confirm',
+    'subagent': 'confirm',
+    
+    // Dangerous: 系统操作
+    'bash': 'dangerous',
+    'identity_init': 'dangerous',
+    'session_cleanup': 'dangerous',
+    'heartbeat_run': 'dangerous',
+    'introspect_reflect': 'dangerous',
+  },
+  
+  trustAllowedRisk: {
+    'owner': ['safe', 'confirm', 'dangerous'],
+    'trusted': ['safe', 'confirm'],
+    'normal': ['safe'],
+    'restricted': [],
+  },
+  
+  groupDenyList: [
+    'bash',
+    'write_file',
+    'edit_file',
+    'identity_update',
+    'identity_init',
+    'session_cleanup',
+    'longterm_update',
+  ],
+  
+  sensitivePatterns: [
+    /api[_-]?key/i,
+    /password/i,
+    /secret/i,
+    /token/i,
+    /private[_-]?key/i,
+    /credential/i,
+    /\b[A-Za-z0-9+/]{40,}\b/,  // Base64 长字符串
+    /sk-[a-zA-Z0-9]{20,}/,     // OpenAI API key
+    /ghp_[a-zA-Z0-9]{36}/,     // GitHub token
+  ],
+  
+  auditEnabled: true,
+  confirmDangerous: true,
+};
+
+// 安全系统
+class SecuritySystem {
+  private workspaceDir: string;
+  private auditDir: string;
+  private policyFile: string;
+  private policy: SecurityPolicy;
+  private currentContext: SecurityContext = { trustLevel: 'normal' };
+  private pendingConfirmations: Map<string, { tool: string; args: Record<string, any>; resolve: (confirmed: boolean) => void }> = new Map();
+
+  constructor(workspaceDir: string) {
+    this.workspaceDir = workspaceDir;
+    this.auditDir = path.join(workspaceDir, '.security', 'audit');
+    this.policyFile = path.join(workspaceDir, '.security', 'policy.json');
+    
+    if (!fs.existsSync(this.auditDir)) {
+      fs.mkdirSync(this.auditDir, { recursive: true });
+    }
+    
+    this.policy = this.loadPolicy();
+  }
+
+  private loadPolicy(): SecurityPolicy {
+    if (fs.existsSync(this.policyFile)) {
+      try {
+        const saved = JSON.parse(fs.readFileSync(this.policyFile, 'utf-8'));
+        // 合并默认策略和保存的策略
+        return {
+          ...DEFAULT_SECURITY_POLICY,
+          ...saved,
+          toolRiskLevels: { ...DEFAULT_SECURITY_POLICY.toolRiskLevels, ...saved.toolRiskLevels },
+          trustAllowedRisk: { ...DEFAULT_SECURITY_POLICY.trustAllowedRisk, ...saved.trustAllowedRisk },
+        };
+      } catch (e) {
+        console.log('\x1b[33m警告: 安全策略文件损坏，使用默认策略\x1b[0m');
+      }
+    }
+    return { ...DEFAULT_SECURITY_POLICY };
+  }
+
+  private savePolicy() {
+    const dir = path.dirname(this.policyFile);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.writeFileSync(this.policyFile, JSON.stringify(this.policy, null, 2));
+  }
+
+  // 设置当前安全上下文
+  setContext(ctx: Partial<SecurityContext>) {
+    this.currentContext = { ...this.currentContext, ...ctx };
+  }
+
+  // 获取工具风险等级
+  getToolRiskLevel(tool: string): ToolRiskLevel {
+    return this.policy.toolRiskLevels[tool] || 'confirm';
+  }
+
+  // 检查操作是否允许
+  checkPermission(tool: string, args: Record<string, any>): { allowed: boolean; reason?: string; needsConfirm?: boolean } {
+    const riskLevel = this.getToolRiskLevel(tool);
+    const { trustLevel, chatType, channel } = this.currentContext;
+    
+    // 检查信任等级
+    const allowedRisks = this.policy.trustAllowedRisk[trustLevel];
+    if (!allowedRisks.includes(riskLevel)) {
+      return { 
+        allowed: false, 
+        reason: `信任等级 ${trustLevel} 不允许执行 ${riskLevel} 级别的操作` 
+      };
+    }
+    
+    // 检查群聊限制
+    if (chatType === 'group' && this.policy.groupDenyList.includes(tool)) {
+      return { 
+        allowed: false, 
+        reason: `工具 ${tool} 在群聊中被禁用` 
+      };
+    }
+    
+    // 检查是否需要确认
+    if (riskLevel === 'dangerous' && this.policy.confirmDangerous) {
+      return { 
+        allowed: true, 
+        needsConfirm: true,
+        reason: `危险操作需要确认` 
+      };
+    }
+    
+    return { allowed: true };
+  }
+
+  // 记录审计日志
+  logAudit(entry: Omit<AuditLogEntry, 'timestamp'>) {
+    if (!this.policy.auditEnabled) return;
+    
+    const fullEntry: AuditLogEntry = {
+      ...entry,
+      timestamp: Date.now(),
+      userId: this.currentContext.userId,
+      channel: this.currentContext.channel,
+      chatType: this.currentContext.chatType,
+    };
+    
+    // 写入日志文件
+    const date = new Date().toISOString().split('T')[0];
+    const logFile = path.join(this.auditDir, `audit_${date}.jsonl`);
+    fs.appendFileSync(logFile, JSON.stringify(fullEntry) + '\n');
+  }
+
+  // 遮蔽敏感信息
+  maskSensitive(text: string): string {
+    let masked = text;
+    for (const pattern of this.policy.sensitivePatterns) {
+      masked = masked.replace(pattern, '[REDACTED]');
+    }
+    return masked;
+  }
+
+  // 检查文本是否包含敏感信息
+  containsSensitive(text: string): boolean {
+    return this.policy.sensitivePatterns.some(p => p.test(text));
+  }
+
+  // 获取审计日志
+  getAuditLogs(days: number = 7, limit: number = 100): string {
+    const logs: AuditLogEntry[] = [];
+    const files = fs.readdirSync(this.auditDir)
+      .filter(f => f.startsWith('audit_'))
+      .sort()
+      .reverse()
+      .slice(0, days);
+    
+    for (const file of files) {
+      const content = fs.readFileSync(path.join(this.auditDir, file), 'utf-8');
+      const entries = content.trim().split('\n')
+        .filter(Boolean)
+        .map(line => {
+          try { return JSON.parse(line); } catch { return null; }
+        })
+        .filter(Boolean);
+      logs.push(...entries);
+      if (logs.length >= limit) break;
+    }
+    
+    if (logs.length === 0) {
+      return '暂无审计日志';
+    }
+    
+    const lines = logs.slice(0, limit).map(log => {
+      const time = new Date(log.timestamp).toLocaleString('zh-CN');
+      const icon = log.decision === 'allowed' ? '✓' : log.decision === 'denied' ? '✗' : '?';
+      return `[${time}] ${icon} ${log.tool} (${log.riskLevel}) - ${log.decision}${log.reason ? `: ${log.reason}` : ''}`;
+    });
+    
+    return `## 审计日志 (最近 ${logs.length} 条)\n\n${lines.join('\n')}`;
+  }
+
+  // 获取安全策略摘要
+  getPolicySummary(): string {
+    const riskCounts = { safe: 0, confirm: 0, dangerous: 0 };
+    for (const level of Object.values(this.policy.toolRiskLevels)) {
+      riskCounts[level]++;
+    }
+    
+    return `## 安全策略摘要
+
+### 工具风险分布
+- 🟢 Safe: ${riskCounts.safe} 个
+- 🟡 Confirm: ${riskCounts.confirm} 个
+- 🔴 Dangerous: ${riskCounts.dangerous} 个
+
+### 信任等级权限
+- owner: ${this.policy.trustAllowedRisk.owner.join(', ')}
+- trusted: ${this.policy.trustAllowedRisk.trusted.join(', ')}
+- normal: ${this.policy.trustAllowedRisk.normal.join(', ')}
+- restricted: ${this.policy.trustAllowedRisk.restricted.join(', ')}
+
+### 群聊禁用工具
+${this.policy.groupDenyList.map(t => `- ${t}`).join('\n')}
+
+### 审计状态
+- 审计日志: ${this.policy.auditEnabled ? '已启用' : '已禁用'}
+- 危险操作确认: ${this.policy.confirmDangerous ? '已启用' : '已禁用'}`;
+  }
+
+  // 更新策略
+  updatePolicy(updates: Partial<SecurityPolicy>): string {
+    this.policy = { ...this.policy, ...updates };
+    this.savePolicy();
+    return '安全策略已更新';
+  }
+
+  // 设置工具风险等级
+  setToolRiskLevel(tool: string, level: ToolRiskLevel): string {
+    this.policy.toolRiskLevels[tool] = level;
+    this.savePolicy();
+    return `已将 ${tool} 的风险等级设置为 ${level}`;
+  }
+}
+
+// 初始化安全系统
+const securitySystem = new SecuritySystem(WORKDIR);
+
+// ============================================================================
+// V13: 自进化系统 - 从数据中学习，持续优化
+// ============================================================================
+
+interface ToolCallPattern {
+  sequence: string[];
+  frequency: number;
+  avgDuration: number;
+  successRate: number;
+  context?: string;
+}
+
+interface BehaviorStats {
+  totalCalls: number;
+  uniqueTools: number;
+  avgCallsPerSession: number;
+  topPatterns: ToolCallPattern[];
+  inefficientPatterns: ToolCallPattern[];
+  errorPatterns: ToolCallPattern[];
+}
+
+interface PolicySuggestion {
+  id: string;
+  type: 'risk_level' | 'trust_adjustment' | 'deny_list' | 'performance';
+  tool?: string;
+  currentValue: string;
+  suggestedValue: string;
+  confidence: number;
+  reason: string;
+  evidence: string[];
+  createdAt: number;
+  applied: boolean;
+}
+
+interface EvolutionHistory {
+  timestamp: number;
+  action: 'analyze' | 'suggest' | 'apply' | 'rollback';
+  details: string;
+  suggestionId?: string;
+}
+
+class EvolutionSystem {
+  private workspaceDir: string;
+  private evolutionDir: string;
+  private patternsFile: string;
+  private suggestionsFile: string;
+  private historyFile: string;
+  private patterns: ToolCallPattern[] = [];
+  private suggestions: PolicySuggestion[] = [];
+
+  constructor(workspaceDir: string) {
+    this.workspaceDir = workspaceDir;
+    this.evolutionDir = path.join(workspaceDir, '.evolution');
+    this.patternsFile = path.join(this.evolutionDir, 'patterns.json');
+    this.suggestionsFile = path.join(this.evolutionDir, 'suggestions.json');
+    this.historyFile = path.join(this.evolutionDir, 'history.jsonl');
+    
+    if (!fs.existsSync(this.evolutionDir)) {
+      fs.mkdirSync(this.evolutionDir, { recursive: true });
+    }
+    
+    this.loadState();
+  }
+
+  private loadState() {
+    if (fs.existsSync(this.patternsFile)) {
+      try {
+        this.patterns = JSON.parse(fs.readFileSync(this.patternsFile, 'utf-8'));
+      } catch (e) { /* ignore */ }
+    }
+    if (fs.existsSync(this.suggestionsFile)) {
+      try {
+        this.suggestions = JSON.parse(fs.readFileSync(this.suggestionsFile, 'utf-8'));
+      } catch (e) { /* ignore */ }
+    }
+  }
+
+  private saveState() {
+    fs.writeFileSync(this.patternsFile, JSON.stringify(this.patterns, null, 2));
+    fs.writeFileSync(this.suggestionsFile, JSON.stringify(this.suggestions, null, 2));
+  }
+
+  private logHistory(entry: Omit<EvolutionHistory, 'timestamp'>) {
+    const fullEntry = { ...entry, timestamp: Date.now() };
+    fs.appendFileSync(this.historyFile, JSON.stringify(fullEntry) + '\n');
+  }
+
+  // 分析行为模式
+  analyze(days: number = 7): string {
+    const introspectionDir = path.join(this.workspaceDir, '.introspection');
+    if (!fs.existsSync(introspectionDir)) {
+      return '无内省数据可分析';
+    }
+
+    // 读取内省日志
+    const toolCalls: Array<{ tool: string; duration: number; success: boolean; timestamp: number }> = [];
+    const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+    
+    const files = fs.readdirSync(introspectionDir).filter(f => f.endsWith('.jsonl'));
+    for (const file of files) {
+      const content = fs.readFileSync(path.join(introspectionDir, file), 'utf-8');
+      for (const line of content.split('\n').filter(l => l.trim())) {
+        try {
+          const entry = JSON.parse(line);
+          if (entry.timestamp >= cutoff && entry.tool) {
+            toolCalls.push({
+              tool: entry.tool,
+              duration: entry.duration || 0,
+              success: !entry.output?.includes('错误') && !entry.output?.includes('Error'),
+              timestamp: entry.timestamp
+            });
+          }
+        } catch (e) { /* ignore */ }
+      }
+    }
+
+    if (toolCalls.length === 0) {
+      return '分析期间无工具调用记录';
+    }
+
+    // 统计工具使用
+    const toolStats = new Map<string, { count: number; totalDuration: number; errors: number }>();
+    for (const call of toolCalls) {
+      const stat = toolStats.get(call.tool) || { count: 0, totalDuration: 0, errors: 0 };
+      stat.count++;
+      stat.totalDuration += call.duration;
+      if (!call.success) stat.errors++;
+      toolStats.set(call.tool, stat);
+    }
+
+    // 识别序列模式 (简化版: 连续3个工具)
+    const sequences = new Map<string, number>();
+    for (let i = 0; i < toolCalls.length - 2; i++) {
+      const seq = [toolCalls[i].tool, toolCalls[i+1].tool, toolCalls[i+2].tool].join(' -> ');
+      sequences.set(seq, (sequences.get(seq) || 0) + 1);
+    }
+
+    // 找出高频模式
+    const topPatterns = Array.from(sequences.entries())
+      .filter(([_, count]) => count >= 2)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([seq, freq]) => ({
+        sequence: seq.split(' -> '),
+        frequency: freq,
+        avgDuration: 0,
+        successRate: 1
+      }));
+
+    this.patterns = topPatterns;
+    this.saveState();
+
+    // 生成报告
+    const stats: BehaviorStats = {
+      totalCalls: toolCalls.length,
+      uniqueTools: toolStats.size,
+      avgCallsPerSession: toolCalls.length / Math.max(1, days),
+      topPatterns,
+      inefficientPatterns: [],
+      errorPatterns: []
+    };
+
+    // 识别低效模式 (重复调用同一工具)
+    for (let i = 0; i < toolCalls.length - 2; i++) {
+      if (toolCalls[i].tool === toolCalls[i+1].tool && toolCalls[i+1].tool === toolCalls[i+2].tool) {
+        stats.inefficientPatterns.push({
+          sequence: [toolCalls[i].tool, toolCalls[i].tool, toolCalls[i].tool],
+          frequency: 1,
+          avgDuration: 0,
+          successRate: 1,
+          context: '连续重复调用'
+        });
+      }
+    }
+
+    // 识别错误模式
+    for (const [tool, stat] of toolStats) {
+      if (stat.errors > 0 && stat.errors / stat.count > 0.3) {
+        stats.errorPatterns.push({
+          sequence: [tool],
+          frequency: stat.errors,
+          avgDuration: stat.totalDuration / stat.count,
+          successRate: 1 - stat.errors / stat.count,
+          context: `错误率 ${((stat.errors / stat.count) * 100).toFixed(1)}%`
+        });
+      }
+    }
+
+    this.logHistory({ action: 'analyze', details: `分析了 ${days} 天的数据，${toolCalls.length} 次调用` });
+
+    return `## 行为分析报告 (最近 ${days} 天)
+
+**总体统计**
+- 工具调用: ${stats.totalCalls} 次
+- 使用工具: ${stats.uniqueTools} 种
+- 日均调用: ${stats.avgCallsPerSession.toFixed(1)} 次
+
+**高频模式** (出现 ≥2 次)
+${stats.topPatterns.length > 0 
+  ? stats.topPatterns.map(p => `- ${p.sequence.join(' → ')} (${p.frequency}次)`).join('\n')
+  : '- 无明显模式'}
+
+**低效模式**
+${stats.inefficientPatterns.length > 0
+  ? stats.inefficientPatterns.map(p => `- ${p.sequence[0]} 连续调用 3+ 次`).join('\n')
+  : '- 无低效模式'}
+
+**错误模式**
+${stats.errorPatterns.length > 0
+  ? stats.errorPatterns.map(p => `- ${p.sequence[0]}: ${p.context}`).join('\n')
+  : '- 无高错误率工具'}`;
+  }
+
+  // 生成优化建议
+  suggest(focus?: 'security' | 'performance' | 'all'): string {
+    const newSuggestions: PolicySuggestion[] = [];
+    const focusArea = focus || 'all';
+
+    // 基于模式生成建议
+    if (focusArea === 'all' || focusArea === 'performance') {
+      // 检查是否有重复读取模式
+      for (const pattern of this.patterns) {
+        if (pattern.sequence[0] === pattern.sequence[1] && pattern.sequence[0] === 'read_file') {
+          newSuggestions.push({
+            id: `sug_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+            type: 'performance',
+            tool: 'read_file',
+            currentValue: '无缓存',
+            suggestedValue: '添加文件缓存',
+            confidence: 0.7,
+            reason: '检测到重复读取同一文件的模式',
+            evidence: [`模式: ${pattern.sequence.join(' → ')} 出现 ${pattern.frequency} 次`],
+            createdAt: Date.now(),
+            applied: false
+          });
+        }
+      }
+    }
+
+    if (focusArea === 'all' || focusArea === 'security') {
+      // 检查审计日志中的安全模式
+      const auditDir = path.join(this.workspaceDir, '.security', 'audit');
+      if (fs.existsSync(auditDir)) {
+        const auditFiles = fs.readdirSync(auditDir).filter(f => f.endsWith('.jsonl'));
+        let dangerousCount = 0;
+        let confirmedCount = 0;
+        
+        for (const file of auditFiles.slice(-7)) { // 最近7天
+          const content = fs.readFileSync(path.join(auditDir, file), 'utf-8');
+          for (const line of content.split('\n').filter(l => l.trim())) {
+            try {
+              const entry = JSON.parse(line);
+              if (entry.riskLevel === 'dangerous') dangerousCount++;
+              if (entry.decision === 'confirmed') confirmedCount++;
+            } catch (e) { /* ignore */ }
+          }
+        }
+
+        if (dangerousCount > 10 && confirmedCount === dangerousCount) {
+          newSuggestions.push({
+            id: `sug_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+            type: 'trust_adjustment',
+            currentValue: 'confirmDangerous: true',
+            suggestedValue: 'confirmDangerous: false',
+            confidence: 0.6,
+            reason: '所有危险操作都被确认，可考虑关闭确认提示',
+            evidence: [`${dangerousCount} 次危险操作全部被确认`],
+            createdAt: Date.now(),
+            applied: false
+          });
+        }
+      }
+    }
+
+    // 保存新建议
+    this.suggestions = [...this.suggestions.filter(s => !s.applied), ...newSuggestions];
+    this.saveState();
+
+    this.logHistory({ action: 'suggest', details: `生成了 ${newSuggestions.length} 条建议` });
+
+    if (this.suggestions.length === 0) {
+      return '当前无优化建议。系统运行良好！';
+    }
+
+    return `## 优化建议
+
+${this.suggestions.filter(s => !s.applied).map((s, i) => `
+### ${i + 1}. ${s.type === 'security' ? '🔒' : s.type === 'performance' ? '⚡' : '📋'} ${s.reason}
+- **ID**: ${s.id}
+- **当前**: ${s.currentValue}
+- **建议**: ${s.suggestedValue}
+- **置信度**: ${(s.confidence * 100).toFixed(0)}%
+- **证据**: ${s.evidence.join(', ')}
+`).join('\n')}
+
+使用 \`evolve_apply\` 应用建议。`;
+  }
+
+  // 应用建议
+  apply(suggestionId: string, confirm: boolean = false): string {
+    const suggestion = this.suggestions.find(s => s.id === suggestionId);
+    if (!suggestion) {
+      return `未找到建议: ${suggestionId}`;
+    }
+
+    if (suggestion.applied) {
+      return `建议 ${suggestionId} 已经应用过了`;
+    }
+
+    if (suggestion.confidence < 0.7 && !confirm) {
+      return `建议置信度较低 (${(suggestion.confidence * 100).toFixed(0)}%)，请使用 confirm: true 确认应用`;
+    }
+
+    // 应用建议 (这里是模拟，实际应该修改对应的配置)
+    suggestion.applied = true;
+    this.saveState();
+
+    this.logHistory({ 
+      action: 'apply', 
+      details: `应用建议: ${suggestion.reason}`,
+      suggestionId 
+    });
+
+    return `✓ 已应用建议: ${suggestion.reason}\n\n注意: 这是模拟应用，实际配置变更需要手动执行。`;
+  }
+
+  // 获取进化状态
+  status(): string {
+    const pendingSuggestions = this.suggestions.filter(s => !s.applied).length;
+    const appliedSuggestions = this.suggestions.filter(s => s.applied).length;
+    
+    // 读取历史统计
+    let historyCount = 0;
+    if (fs.existsSync(this.historyFile)) {
+      historyCount = fs.readFileSync(this.historyFile, 'utf-8').split('\n').filter(l => l.trim()).length;
+    }
+
+    return `## 进化系统状态
+
+**建议统计**
+- 待处理: ${pendingSuggestions} 条
+- 已应用: ${appliedSuggestions} 条
+
+**模式识别**
+- 已识别模式: ${this.patterns.length} 个
+
+**历史记录**
+- 总操作数: ${historyCount} 次
+
+**目录**: ${this.evolutionDir}`;
+  }
+
+  // 获取进化历史
+  history(limit: number = 20): string {
+    if (!fs.existsSync(this.historyFile)) {
+      return '无进化历史记录';
+    }
+
+    const lines = fs.readFileSync(this.historyFile, 'utf-8')
+      .split('\n')
+      .filter(l => l.trim())
+      .slice(-limit);
+
+    if (lines.length === 0) {
+      return '无进化历史记录';
+    }
+
+    const entries = lines.map(l => {
+      try {
+        return JSON.parse(l) as EvolutionHistory;
+      } catch (e) {
+        return null;
+      }
+    }).filter(Boolean) as EvolutionHistory[];
+
+    return `## 进化历史 (最近 ${entries.length} 条)
+
+${entries.map(e => {
+  const time = new Date(e.timestamp).toLocaleString('zh-CN');
+  const icon = e.action === 'analyze' ? '🔍' : e.action === 'suggest' ? '💡' : e.action === 'apply' ? '✓' : '↩';
+  return `- ${icon} [${time}] ${e.action}: ${e.details}`;
+}).join('\n')}`;
+  }
+}
+
+// 初始化进化系统
+const evolutionSystem = new EvolutionSystem(WORKDIR);
+
+// ============================================================================
+// V13.5: 上下文压缩系统 - 记住重要的，压缩冗余的
+// ============================================================================
+
+interface CompressionConfig {
+  maxTurns: number;           // 最大保留轮数
+  keepRecent: number;         // 完整保留最近 N 轮
+  maxToolOutput: number;      // 工具输出最大字符数
+  summaryMaxChars: number;    // 摘要最大字符数
+  autoCompress: boolean;      // 是否自动压缩
+  importanceThreshold: number; // 重要性阈值 (0-1)
+}
+
+interface MessageImportance {
+  score: number;              // 0-1
+  reasons: string[];
+}
+
+interface CompressionStats {
+  totalMessages: number;
+  compressedMessages: number;
+  savedTokens: number;
+  summaries: number;
+  lastCompression: number;
+}
+
+interface ContextSummary {
+  timestamp: number;
+  turnRange: [number, number];
+  content: string;
+  keyPoints: string[];
+}
+
+const DEFAULT_COMPRESSION_CONFIG: CompressionConfig = {
+  maxTurns: 50,
+  keepRecent: 10,
+  maxToolOutput: 3000,
+  summaryMaxChars: 500,
+  autoCompress: true,
+  importanceThreshold: 0.3
+};
+
+class ContextCompressor {
+  private config: CompressionConfig;
+  private configFile: string;
+  private summaryFile: string;
+  private summaries: ContextSummary[] = [];
+  private stats: CompressionStats = {
+    totalMessages: 0,
+    compressedMessages: 0,
+    savedTokens: 0,
+    summaries: 0,
+    lastCompression: 0
+  };
+
+  constructor(workspaceDir: string) {
+    const compressionDir = path.join(workspaceDir, '.compression');
+    if (!fs.existsSync(compressionDir)) {
+      fs.mkdirSync(compressionDir, { recursive: true });
+    }
+    
+    this.configFile = path.join(compressionDir, 'config.json');
+    this.summaryFile = path.join(compressionDir, 'summaries.json');
+    this.config = this.loadConfig();
+    this.loadSummaries();
+  }
+
+  private loadConfig(): CompressionConfig {
+    if (fs.existsSync(this.configFile)) {
+      try {
+        return { ...DEFAULT_COMPRESSION_CONFIG, ...JSON.parse(fs.readFileSync(this.configFile, 'utf-8')) };
+      } catch (e) { /* ignore */ }
+    }
+    return { ...DEFAULT_COMPRESSION_CONFIG };
+  }
+
+  private saveConfig() {
+    fs.writeFileSync(this.configFile, JSON.stringify(this.config, null, 2));
+  }
+
+  private loadSummaries() {
+    if (fs.existsSync(this.summaryFile)) {
+      try {
+        this.summaries = JSON.parse(fs.readFileSync(this.summaryFile, 'utf-8'));
+      } catch (e) { /* ignore */ }
+    }
+  }
+
+  private saveSummaries() {
+    fs.writeFileSync(this.summaryFile, JSON.stringify(this.summaries, null, 2));
+  }
+
+  // 评估消息重要性
+  private evaluateImportance(message: Anthropic.MessageParam): MessageImportance {
+    const reasons: string[] = [];
+    let score = 0.5; // 基础分
+
+    const content = typeof message.content === 'string' 
+      ? message.content 
+      : JSON.stringify(message.content);
+
+    // 用户消息通常更重要
+    if (message.role === 'user') {
+      score += 0.2;
+      reasons.push('用户消息');
+    }
+
+    // 包含关键词的消息更重要
+    const importantKeywords = ['重要', '记住', '必须', '关键', 'important', 'remember', 'must', 'critical'];
+    if (importantKeywords.some(kw => content.toLowerCase().includes(kw))) {
+      score += 0.2;
+      reasons.push('包含重要关键词');
+    }
+
+    // 包含代码或命令的消息
+    if (content.includes('```') || content.includes('$ ')) {
+      score += 0.1;
+      reasons.push('包含代码/命令');
+    }
+
+    // 工具结果通常可以压缩
+    if (Array.isArray(message.content)) {
+      const hasToolResult = message.content.some((c: any) => c.type === 'tool_result');
+      if (hasToolResult) {
+        score -= 0.2;
+        reasons.push('工具结果');
+      }
+    }
+
+    // 很短的消息可能不重要
+    if (content.length < 20) {
+      score -= 0.1;
+      reasons.push('内容过短');
+    }
+
+    // 很长的消息可能包含重要信息
+    if (content.length > 1000) {
+      score += 0.1;
+      reasons.push('内容丰富');
+    }
+
+    return { score: Math.max(0, Math.min(1, score)), reasons };
+  }
+
+  // 截断工具输出
+  truncateToolOutput(output: string): string {
+    if (output.length <= this.config.maxToolOutput) {
+      return output;
+    }
+    
+    const half = Math.floor(this.config.maxToolOutput / 2);
+    const truncated = output.slice(0, half) + 
+      `\n\n... [截断 ${output.length - this.config.maxToolOutput} 字符] ...\n\n` + 
+      output.slice(-half);
+    
+    this.stats.savedTokens += output.length - truncated.length;
+    return truncated;
+  }
+
+  // 生成摘要 (简化版，不调用 LLM)
+  private generateSummary(messages: Anthropic.MessageParam[]): string {
+    const points: string[] = [];
+    
+    for (const msg of messages) {
+      const content = typeof msg.content === 'string' 
+        ? msg.content 
+        : JSON.stringify(msg.content);
+      
+      // 提取关键信息
+      if (msg.role === 'user') {
+        const firstLine = content.split('\n')[0].slice(0, 100);
+        points.push(`用户: ${firstLine}`);
+      } else if (msg.role === 'assistant') {
+        // 提取工具调用
+        if (Array.isArray(msg.content)) {
+          const toolCalls = msg.content
+            .filter((c: any) => c.type === 'tool_use')
+            .map((c: any) => c.name);
+          if (toolCalls.length > 0) {
+            points.push(`工具: ${toolCalls.join(', ')}`);
+          }
+        }
+      }
+    }
+
+    return points.slice(0, 10).join('\n');
+  }
+
+  // 压缩历史
+  compress(history: Anthropic.MessageParam[]): Anthropic.MessageParam[] {
+    if (!this.config.autoCompress) {
+      return history;
+    }
+
+    this.stats.totalMessages = history.length;
+
+    // 如果历史不够长，不压缩
+    if (history.length <= this.config.keepRecent * 2) {
+      return history;
+    }
+
+    // 分离要保留和要压缩的消息
+    const toCompress = history.slice(0, -this.config.keepRecent * 2);
+    const toKeep = history.slice(-this.config.keepRecent * 2);
+
+    // 按重要性过滤
+    const important = toCompress.filter(msg => {
+      const { score } = this.evaluateImportance(msg);
+      return score >= this.config.importanceThreshold;
+    });
+
+    // 生成摘要
+    const summary = this.generateSummary(toCompress);
+    
+    // 保存摘要
+    const contextSummary: ContextSummary = {
+      timestamp: Date.now(),
+      turnRange: [0, toCompress.length],
+      content: summary,
+      keyPoints: summary.split('\n').filter(l => l.trim())
+    };
+    this.summaries.push(contextSummary);
+    this.saveSummaries();
+
+    // 构建压缩后的历史
+    const compressed: Anthropic.MessageParam[] = [];
+    
+    // 添加摘要作为系统消息
+    if (summary.trim()) {
+      compressed.push({
+        role: 'user',
+        content: `[历史摘要]\n${summary}\n[摘要结束]`
+      });
+      compressed.push({
+        role: 'assistant',
+        content: '我已了解之前的对话内容。'
+      });
+    }
+
+    // 添加重要消息
+    compressed.push(...important.slice(-5)); // 最多保留5条重要消息
+
+    // 添加最近的消息
+    compressed.push(...toKeep);
+
+    this.stats.compressedMessages = history.length - compressed.length;
+    this.stats.summaries = this.summaries.length;
+    this.stats.lastCompression = Date.now();
+
+    return compressed;
+  }
+
+  // 获取状态
+  getStatus(): string {
+    return `## 上下文压缩状态
+
+**配置**
+- 最大轮数: ${this.config.maxTurns}
+- 保留最近: ${this.config.keepRecent} 轮
+- 工具输出限制: ${this.config.maxToolOutput} 字符
+- 自动压缩: ${this.config.autoCompress ? '开启' : '关闭'}
+
+**统计**
+- 总消息数: ${this.stats.totalMessages}
+- 已压缩: ${this.stats.compressedMessages} 条
+- 节省 token: ~${this.stats.savedTokens}
+- 摘要数: ${this.stats.summaries}
+- 上次压缩: ${this.stats.lastCompression ? new Date(this.stats.lastCompression).toLocaleString('zh-CN') : '从未'}`;
+  }
+
+  // 手动压缩
+  manualCompress(history: Anthropic.MessageParam[]): { compressed: Anthropic.MessageParam[]; report: string } {
+    const before = history.length;
+    const compressed = this.compress(history);
+    const after = compressed.length;
+    
+    return {
+      compressed,
+      report: `压缩完成: ${before} → ${after} 条消息 (减少 ${before - after} 条)`
+    };
+  }
+
+  // 更新配置
+  updateConfig(updates: Partial<CompressionConfig>): string {
+    this.config = { ...this.config, ...updates };
+    this.saveConfig();
+    return `配置已更新:\n${JSON.stringify(updates, null, 2)}`;
+  }
+
+  // 获取摘要历史
+  getSummaries(limit: number = 5): string {
+    if (this.summaries.length === 0) {
+      return '暂无历史摘要';
+    }
+
+    const recent = this.summaries.slice(-limit);
+    return `## 历史摘要 (最近 ${recent.length} 条)
+
+${recent.map((s, i) => `
+### ${i + 1}. ${new Date(s.timestamp).toLocaleString('zh-CN')}
+**范围**: 第 ${s.turnRange[0]} - ${s.turnRange[1]} 轮
+**要点**:
+${s.keyPoints.map(p => `- ${p}`).join('\n')}
+`).join('\n')}`;
+  }
+}
+
+// 初始化上下文压缩器
+const contextCompressor = new ContextCompressor(WORKDIR);
+
+// ============================================================================
+// V14: 插件系统 - 动态加载外部能力
+// ============================================================================
+
+// 插件配置 Schema
+interface PluginConfigSchema {
+  type: 'object';
+  properties: Record<string, {
+    type: 'string' | 'number' | 'boolean' | 'array';
+    description?: string;
+    default?: unknown;
+    required?: boolean;
+    sensitive?: boolean;
+    uiHint?: string;
+  }>;
+}
+
+// 插件工具定义
+interface PluginTool {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+  handler: (args: Record<string, unknown>, ctx: PluginToolContext) => Promise<string> | string;
+}
+
+// 工具上下文
+interface PluginToolContext {
+  pluginId: string;
+  config: Record<string, unknown>;
+  workspaceDir: string;
+}
+
+// 生命周期钩子
+type PluginHookName = 
+  | 'before_agent_start'
+  | 'after_agent_end'
+  | 'before_tool_call'
+  | 'after_tool_call'
+  | 'message_received'
+  | 'message_sending';
+
+interface PluginHookEvent {
+  hookName: PluginHookName;
+  data: Record<string, unknown>;
+  timestamp: number;
+}
+
+interface PluginHookResult {
+  modified?: boolean;
+  data?: Record<string, unknown>;
+  block?: boolean;
+  blockReason?: string;
+}
+
+interface PluginHook {
+  name: PluginHookName;
+  priority?: number;
+  handler: (event: PluginHookEvent) => Promise<PluginHookResult | void> | PluginHookResult | void;
+}
+
+// 插件接口
+interface Plugin {
+  id: string;
+  name: string;
+  version: string;
+  description?: string;
+  author?: string;
+  
+  configSchema?: PluginConfigSchema;
+  tools?: PluginTool[];
+  hooks?: PluginHook[];
+  
+  onLoad?: (ctx: PluginContext) => Promise<void> | void;
+  onUnload?: () => Promise<void> | void;
+}
+
+// 插件上下文
+interface PluginContext {
+  workspaceDir: string;
+  config: Record<string, unknown>;
+  logger: PluginLogger;
+}
+
+// 插件日志
+interface PluginLogger {
+  info: (message: string) => void;
+  warn: (message: string) => void;
+  error: (message: string) => void;
+}
+
+// 已加载的插件
+interface LoadedPlugin {
+  plugin: Plugin;
+  config: Record<string, unknown>;
+  loadedAt: number;
+  source: string;
+  enabled: boolean;
+}
+
+// 插件管理器
+class PluginManager {
+  private plugins: Map<string, LoadedPlugin> = new Map();
+  private pluginDir: string;
+  private configFile: string;
+  private configs: Record<string, Record<string, unknown>> = {};
+
+  constructor(workspaceDir: string) {
+    this.pluginDir = path.join(workspaceDir, 'plugins');
+    this.configFile = path.join(workspaceDir, '.plugins.json');
+    
+    if (!fs.existsSync(this.pluginDir)) {
+      fs.mkdirSync(this.pluginDir, { recursive: true });
+    }
+    
+    this.loadConfigs();
+  }
+
+  private loadConfigs() {
+    if (fs.existsSync(this.configFile)) {
+      try {
+        this.configs = JSON.parse(fs.readFileSync(this.configFile, 'utf-8'));
+      } catch (e) {
+        console.log('\x1b[33m警告: 插件配置文件损坏\x1b[0m');
+      }
+    }
+  }
+
+  private saveConfigs() {
+    fs.writeFileSync(this.configFile, JSON.stringify(this.configs, null, 2));
+  }
+
+  private createLogger(pluginId: string): PluginLogger {
+    return {
+      info: (msg) => console.log(`\x1b[36m[Plugin:${pluginId}]\x1b[0m ${msg}`),
+      warn: (msg) => console.log(`\x1b[33m[Plugin:${pluginId}]\x1b[0m ${msg}`),
+      error: (msg) => console.log(`\x1b[31m[Plugin:${pluginId}]\x1b[0m ${msg}`)
+    };
+  }
+
+  // 发现插件
+  async discover(): Promise<string[]> {
+    const candidates: string[] = [];
+    
+    if (!fs.existsSync(this.pluginDir)) {
+      return candidates;
+    }
+
+    const entries = fs.readdirSync(this.pluginDir, { withFileTypes: true });
+    
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        // 目录插件: 检查 index.ts 或 package.json
+        const indexPath = path.join(this.pluginDir, entry.name, 'index.ts');
+        const pkgPath = path.join(this.pluginDir, entry.name, 'package.json');
+        
+        if (fs.existsSync(indexPath)) {
+          candidates.push(path.join(this.pluginDir, entry.name));
+        } else if (fs.existsSync(pkgPath)) {
+          try {
+            const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
+            if (pkg.openclaw?.plugin) {
+              candidates.push(path.join(this.pluginDir, entry.name));
+            }
+          } catch (e) { /* ignore */ }
+        }
+      } else if (entry.name.endsWith('.ts') || entry.name.endsWith('.js')) {
+        // 单文件插件
+        candidates.push(path.join(this.pluginDir, entry.name));
+      }
+    }
+
+    return candidates;
+  }
+
+  // 加载插件
+  async load(source: string): Promise<string> {
+    try {
+      // 检查是否是内置插件
+      const builtinPlugin = this.getBuiltinPlugin(source);
+      if (builtinPlugin) {
+        return this.registerPlugin(builtinPlugin, `builtin:${source}`);
+      }
+
+      // 检查文件是否存在
+      const fullPath = path.isAbsolute(source) ? source : path.join(this.pluginDir, source);
+      
+      if (!fs.existsSync(fullPath)) {
+        return `错误: 插件不存在 ${source}`;
+      }
+
+      // 动态导入插件 (简化版: 读取并解析)
+      // 注意: 实际生产环境需要更安全的沙箱执行
+      const stat = fs.statSync(fullPath);
+      let pluginPath = fullPath;
+      
+      if (stat.isDirectory()) {
+        pluginPath = path.join(fullPath, 'index.ts');
+        if (!fs.existsSync(pluginPath)) {
+          pluginPath = path.join(fullPath, 'index.js');
+        }
+      }
+
+      // 这里简化处理，实际应该用 dynamic import
+      // const module = await import(pluginPath);
+      // const plugin = module.default as Plugin;
+      
+      return `插件加载功能需要 ESM 动态导入支持。请使用内置插件或手动注册。\n可用内置插件: weather, calculator, timestamp`;
+    } catch (e: any) {
+      return `加载插件失败: ${e.message}`;
+    }
+  }
+
+  // 获取内置插件
+  private getBuiltinPlugin(name: string): Plugin | null {
+    const builtins: Record<string, Plugin> = {
+      'weather': {
+        id: 'weather',
+        name: 'Weather Plugin',
+        version: '1.0.0',
+        description: '获取天气信息 (模拟)',
+        tools: [{
+          name: 'plugin_weather',
+          description: '获取指定城市的天气',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              city: { type: 'string', description: '城市名' }
+            }
+          },
+          handler: (args) => {
+            const city = args.city || 'Beijing';
+            const temps = [18, 22, 25, 28, 30, 15, 20];
+            const conditions = ['晴', '多云', '阴', '小雨', '大风'];
+            const temp = temps[Math.floor(Math.random() * temps.length)];
+            const condition = conditions[Math.floor(Math.random() * conditions.length)];
+            return `${city} 天气: ${condition}, ${temp}°C`;
+          }
+        }]
+      },
+      'calculator': {
+        id: 'calculator',
+        name: 'Calculator Plugin',
+        version: '1.0.0',
+        description: '数学计算',
+        tools: [{
+          name: 'plugin_calc',
+          description: '执行数学计算',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              expression: { type: 'string', description: '数学表达式' }
+            },
+            required: ['expression']
+          },
+          handler: (args) => {
+            try {
+              // 安全的数学计算 (只允许数字和基本运算符)
+              const expr = String(args.expression).replace(/[^0-9+\-*/().%\s]/g, '');
+              if (!expr) return '错误: 无效表达式';
+              const result = Function(`"use strict"; return (${expr})`)();
+              return `${args.expression} = ${result}`;
+            } catch (e: any) {
+              return `计算错误: ${e.message}`;
+            }
+          }
+        }]
+      },
+      'timestamp': {
+        id: 'timestamp',
+        name: 'Timestamp Plugin',
+        version: '1.0.0',
+        description: '时间戳转换',
+        tools: [{
+          name: 'plugin_timestamp',
+          description: '时间戳与日期互转',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              value: { type: 'string', description: '时间戳或日期字符串' },
+              format: { type: 'string', description: '输出格式: iso/unix/locale' }
+            },
+            required: ['value']
+          },
+          handler: (args) => {
+            const value = String(args.value);
+            const format = args.format || 'iso';
+            
+            let date: Date;
+            if (/^\d{10,13}$/.test(value)) {
+              // Unix 时间戳
+              const ts = value.length === 10 ? parseInt(value) * 1000 : parseInt(value);
+              date = new Date(ts);
+            } else {
+              date = new Date(value);
+            }
+            
+            if (isNaN(date.getTime())) {
+              return '错误: 无效的时间值';
+            }
+            
+            switch (format) {
+              case 'unix': return `Unix 时间戳: ${Math.floor(date.getTime() / 1000)}`;
+              case 'locale': return `本地时间: ${date.toLocaleString('zh-CN')}`;
+              default: return `ISO 时间: ${date.toISOString()}`;
+            }
+          }
+        }]
+      }
+    };
+    
+    return builtins[name] || null;
+  }
+
+  // 注册插件
+  private registerPlugin(plugin: Plugin, source: string): string {
+    if (this.plugins.has(plugin.id)) {
+      return `插件 ${plugin.id} 已加载`;
+    }
+
+    const config = this.configs[plugin.id] || {};
+    
+    // 应用默认配置
+    if (plugin.configSchema?.properties) {
+      for (const [key, schema] of Object.entries(plugin.configSchema.properties)) {
+        if (config[key] === undefined && schema.default !== undefined) {
+          config[key] = schema.default;
+        }
+      }
+    }
+
+    const loaded: LoadedPlugin = {
+      plugin,
+      config,
+      loadedAt: Date.now(),
+      source,
+      enabled: true
+    };
+
+    this.plugins.set(plugin.id, loaded);
+    this.configs[plugin.id] = config;
+    this.saveConfigs();
+
+    // 调用 onLoad
+    if (plugin.onLoad) {
+      try {
+        plugin.onLoad({
+          workspaceDir: WORKDIR,
+          config,
+          logger: this.createLogger(plugin.id)
+        });
+      } catch (e: any) {
+        console.log(`\x1b[33m[Plugin:${plugin.id}] onLoad 错误: ${e.message}\x1b[0m`);
+      }
+    }
+
+    console.log(`\x1b[32m[Plugin] 已加载: ${plugin.name} v${plugin.version}\x1b[0m`);
+    return `已加载插件: ${plugin.name} v${plugin.version}`;
+  }
+
+  // 卸载插件
+  async unload(pluginId: string): Promise<string> {
+    const loaded = this.plugins.get(pluginId);
+    if (!loaded) {
+      return `插件 ${pluginId} 未加载`;
+    }
+
+    // 调用 onUnload
+    if (loaded.plugin.onUnload) {
+      try {
+        await loaded.plugin.onUnload();
+      } catch (e: any) {
+        console.log(`\x1b[33m[Plugin:${pluginId}] onUnload 错误: ${e.message}\x1b[0m`);
+      }
+    }
+
+    this.plugins.delete(pluginId);
+    console.log(`\x1b[33m[Plugin] 已卸载: ${pluginId}\x1b[0m`);
+    return `已卸载插件: ${pluginId}`;
+  }
+
+  // 获取所有插件工具
+  getTools(): Anthropic.Tool[] {
+    const tools: Anthropic.Tool[] = [];
+    
+    for (const [_, loaded] of this.plugins) {
+      if (!loaded.enabled || !loaded.plugin.tools) continue;
+      
+      for (const tool of loaded.plugin.tools) {
+        tools.push({
+          name: tool.name,
+          description: `[Plugin:${loaded.plugin.id}] ${tool.description}`,
+          input_schema: tool.inputSchema as any
+        });
+      }
+    }
+    
+    return tools;
+  }
+
+  // 执行插件工具
+  async executeTool(toolName: string, args: Record<string, unknown>): Promise<string | null> {
+    for (const [_, loaded] of this.plugins) {
+      if (!loaded.enabled || !loaded.plugin.tools) continue;
+      
+      const tool = loaded.plugin.tools.find(t => t.name === toolName);
+      if (tool) {
+        try {
+          const ctx: PluginToolContext = {
+            pluginId: loaded.plugin.id,
+            config: loaded.config,
+            workspaceDir: WORKDIR
+          };
+          return await tool.handler(args, ctx);
+        } catch (e: any) {
+          return `[Plugin:${loaded.plugin.id}] 工具执行错误: ${e.message}`;
+        }
+      }
+    }
+    
+    return null; // 不是插件工具
+  }
+
+  // 触发钩子
+  async triggerHook(hookName: PluginHookName, data: Record<string, unknown>): Promise<PluginHookResult | void> {
+    const event: PluginHookEvent = {
+      hookName,
+      data,
+      timestamp: Date.now()
+    };
+
+    // 收集所有钩子并按优先级排序
+    const hooks: Array<{ pluginId: string; hook: PluginHook }> = [];
+    
+    for (const [pluginId, loaded] of this.plugins) {
+      if (!loaded.enabled || !loaded.plugin.hooks) continue;
+      
+      for (const hook of loaded.plugin.hooks) {
+        if (hook.name === hookName) {
+          hooks.push({ pluginId, hook });
+        }
+      }
+    }
+
+    hooks.sort((a, b) => (a.hook.priority || 100) - (b.hook.priority || 100));
+
+    // 依次执行钩子
+    for (const { pluginId, hook } of hooks) {
+      try {
+        const result = await hook.handler(event);
+        if (result?.block) {
+          return result;
+        }
+        if (result?.modified && result.data) {
+          event.data = { ...event.data, ...result.data };
+        }
+      } catch (e: any) {
+        console.log(`\x1b[33m[Plugin:${pluginId}] Hook 错误: ${e.message}\x1b[0m`);
+      }
+    }
+  }
+
+  // 列出所有插件
+  list(): string {
+    if (this.plugins.size === 0) {
+      return '暂无已加载的插件\n\n可用内置插件: weather, calculator, timestamp\n使用 plugin_load 加载';
+    }
+
+    const lines: string[] = ['## 已加载插件\n'];
+    
+    for (const [id, loaded] of this.plugins) {
+      const status = loaded.enabled ? '🟢' : '⚪';
+      const toolCount = loaded.plugin.tools?.length || 0;
+      const hookCount = loaded.plugin.hooks?.length || 0;
+      
+      lines.push(`### ${status} ${loaded.plugin.name} (${id})`);
+      lines.push(`- 版本: ${loaded.plugin.version}`);
+      if (loaded.plugin.description) {
+        lines.push(`- 描述: ${loaded.plugin.description}`);
+      }
+      lines.push(`- 工具: ${toolCount} 个`);
+      lines.push(`- 钩子: ${hookCount} 个`);
+      lines.push(`- 来源: ${loaded.source}`);
+      lines.push('');
+    }
+
+    return lines.join('\n');
+  }
+
+  // 获取插件信息
+  getInfo(pluginId: string): string {
+    const loaded = this.plugins.get(pluginId);
+    if (!loaded) {
+      return `插件 ${pluginId} 未加载`;
+    }
+
+    const plugin = loaded.plugin;
+    const lines: string[] = [
+      `## ${plugin.name}`,
+      '',
+      `- **ID**: ${plugin.id}`,
+      `- **版本**: ${plugin.version}`,
+      `- **作者**: ${plugin.author || '未知'}`,
+      `- **描述**: ${plugin.description || '无'}`,
+      `- **状态**: ${loaded.enabled ? '已启用' : '已禁用'}`,
+      `- **加载时间**: ${new Date(loaded.loadedAt).toLocaleString('zh-CN')}`,
+      ''
+    ];
+
+    if (plugin.tools && plugin.tools.length > 0) {
+      lines.push('### 提供的工具');
+      for (const tool of plugin.tools) {
+        lines.push(`- **${tool.name}**: ${tool.description}`);
+      }
+      lines.push('');
+    }
+
+    if (plugin.hooks && plugin.hooks.length > 0) {
+      lines.push('### 注册的钩子');
+      for (const hook of plugin.hooks) {
+        lines.push(`- ${hook.name} (优先级: ${hook.priority || 100})`);
+      }
+      lines.push('');
+    }
+
+    if (plugin.configSchema?.properties) {
+      lines.push('### 配置项');
+      for (const [key, schema] of Object.entries(plugin.configSchema.properties)) {
+        const value = loaded.config[key];
+        const displayValue = schema.sensitive ? '[HIDDEN]' : JSON.stringify(value);
+        lines.push(`- **${key}** (${schema.type}): ${displayValue}`);
+        if (schema.description) {
+          lines.push(`  ${schema.description}`);
+        }
+      }
+    }
+
+    return lines.join('\n');
+  }
+
+  // 获取/设置插件配置
+  getConfig(pluginId: string): Record<string, unknown> | null {
+    return this.plugins.get(pluginId)?.config || null;
+  }
+
+  setConfig(pluginId: string, updates: Record<string, unknown>): string {
+    const loaded = this.plugins.get(pluginId);
+    if (!loaded) {
+      return `插件 ${pluginId} 未加载`;
+    }
+
+    // 验证配置
+    if (loaded.plugin.configSchema?.properties) {
+      for (const [key, value] of Object.entries(updates)) {
+        const schema = loaded.plugin.configSchema.properties[key];
+        if (!schema) {
+          return `未知配置项: ${key}`;
+        }
+        // 简单类型检查
+        const actualType = Array.isArray(value) ? 'array' : typeof value;
+        if (schema.type !== actualType) {
+          return `配置项 ${key} 类型错误: 期望 ${schema.type}, 实际 ${actualType}`;
+        }
+      }
+    }
+
+    loaded.config = { ...loaded.config, ...updates };
+    this.configs[pluginId] = loaded.config;
+    this.saveConfigs();
+
+    return `已更新插件 ${pluginId} 配置`;
+  }
+
+  // 启用/禁用插件
+  setEnabled(pluginId: string, enabled: boolean): string {
+    const loaded = this.plugins.get(pluginId);
+    if (!loaded) {
+      return `插件 ${pluginId} 未加载`;
+    }
+
+    loaded.enabled = enabled;
+    return `插件 ${pluginId} 已${enabled ? '启用' : '禁用'}`;
+  }
+
+  // 获取插件数量
+  get count(): number {
+    return this.plugins.size;
+  }
+
+  // 获取已启用的插件数量
+  get enabledCount(): number {
+    return Array.from(this.plugins.values()).filter(p => p.enabled).length;
+  }
+}
+
+// 初始化插件管理器
+const pluginManager = new PluginManager(WORKDIR);
 
 // ============================================================================
 // 系统提示
 // ============================================================================
 
-const BASE_SYSTEM = `你是 OpenClaw V11 - 多渠道 Agent。
+const BASE_SYSTEM = `你是 OpenClaw V14 - 可扩展 Agent (带插件系统)。
 
 ## 工作循环
-observe -> route -> heartbeat -> recall -> identify -> plan -> (load claw) -> (delegate -> collect) -> execute -> track -> remember -> reflect
+observe -> route -> heartbeat -> recall -> identify -> plan -> (load claw/plugin) -> (delegate -> collect) -> execute -> track -> remember -> reflect -> evolve -> compress
 
-## Channel 系统 (V11 核心)
+## 插件系统 (V14 核心)
+工具: plugin_list, plugin_load, plugin_unload, plugin_config, plugin_info
+- 插件接口: 统一的插件定义规范
+- 工具热插拔: 运行时加载/卸载工具
+- 配置 Schema: 插件配置验证
+- 生命周期钩子: 插件可以响应 Agent 事件
+
+插件原则:
+- 模块化: 能力按需加载
+- 安全性: 插件权限受控
+- 可配置: 每个插件独立配置
+- 可追溯: 插件操作有日志
+
+内置插件: weather, calculator, timestamp
+
+## 上下文压缩系统 (继承 V13.5)
+工具: context_status, context_compress, context_config, context_summary
+- 滑动窗口: 保留最近 N 轮完整对话
+- 智能摘要: 旧对话自动压缩成摘要
+- 工具截断: 长输出自动截断
+- 重要性评分: 按优先级保留内容
+
+## 自进化系统 (继承 V13)
+工具: evolve_analyze, evolve_suggest, evolve_apply, evolve_status, evolve_history
+- 分析行为模式: 从内省日志识别工具调用模式
+- 生成优化建议: 基于数据提出安全和性能改进
+- 应用建议: 高置信��建议可自动应用
+- 追踪进化: 记录所有优化决策和效果
+
+进化原则:
+- 数据驱动: 基于实际使用数据优化
+- 保守应用: 置信度 > 70% 才建议应用
+- 可回滚: 所有变更可撤销
+- 透明追踪: 记录所有进化决策
+
+## Channel 系统 (继承 V11)
 工具: channel_list, channel_send, channel_status, channel_config
-- 支持多渠道接入: Console, Telegram, Discord, 飞书
+- 支持多渠道接入: Console, Telegram, Discord 等
 - 每个渠道有独立的能力和配置
 - 根据消息来源自动路由响应
 - 用户信任等级: owner > trusted > normal > restricted
@@ -2221,6 +3670,211 @@ const TOOLS: Anthropic.Tool[] = [
     name: "channel_stop",
     description: "停止所有渠道",
     input_schema: { type: "object" as const, properties: {} }
+  },
+  // V12 新增: Security 工具
+  {
+    name: "security_check",
+    description: "检查操作是否被允许（基于当前安全上下文）",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        tool: { type: "string" as const, description: "要检查的工具名称" },
+        args: { type: "object" as const, description: "工具参数" }
+      },
+      required: ["tool"]
+    }
+  },
+  {
+    name: "security_audit",
+    description: "查看审计日志",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        days: { type: "number" as const, description: "查看最近几天的日志，默认7" },
+        limit: { type: "number" as const, description: "最多返回多少条，默认100" }
+      }
+    }
+  },
+  {
+    name: "security_policy",
+    description: "查看或更新安全策略",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        action: { type: "string" as const, enum: ["view", "set_tool_risk", "toggle_audit", "toggle_confirm"], description: "操作类型" },
+        tool: { type: "string" as const, description: "工具名称（set_tool_risk 时需要）" },
+        risk_level: { type: "string" as const, enum: ["safe", "confirm", "dangerous"], description: "风险等级（set_tool_risk 时需要）" }
+      }
+    }
+  },
+  {
+    name: "security_mask",
+    description: "遮蔽文本中的敏感信息",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        text: { type: "string" as const, description: "要处理的文本" }
+      },
+      required: ["text"]
+    }
+  },
+  {
+    name: "security_context",
+    description: "设置当前安全上下文（用于测试）",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        userId: { type: "string" as const },
+        channel: { type: "string" as const },
+        chatType: { type: "string" as const, enum: ["direct", "group"] },
+        trustLevel: { type: "string" as const, enum: ["owner", "trusted", "normal", "restricted"] }
+      }
+    }
+  },
+  // V13 新增: 自进化工具
+  {
+    name: "evolve_analyze",
+    description: "分析行为模式，从内省日志中识别工具调用模式",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        days: { type: "number" as const, description: "分析最近多少天的数据，默认7天" }
+      }
+    }
+  },
+  {
+    name: "evolve_suggest",
+    description: "基于分析结果生成优化建议",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        focus: { type: "string" as const, enum: ["security", "performance", "all"], description: "关注领域" }
+      }
+    }
+  },
+  {
+    name: "evolve_apply",
+    description: "应用优化建议",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        suggestion_id: { type: "string" as const, description: "建议ID" },
+        confirm: { type: "boolean" as const, description: "确认应用低置信度建议" }
+      },
+      required: ["suggestion_id"]
+    }
+  },
+  {
+    name: "evolve_status",
+    description: "查看进化系统状态",
+    input_schema: {
+      type: "object" as const,
+      properties: {}
+    }
+  },
+  {
+    name: "evolve_history",
+    description: "查看进化历史记录",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        limit: { type: "number" as const, description: "返回记录数量，默认20" }
+      }
+    }
+  },
+  // V13.5 新增: 上下文压缩工具
+  {
+    name: "context_status",
+    description: "查看上下文压缩状态和配置",
+    input_schema: {
+      type: "object" as const,
+      properties: {}
+    }
+  },
+  {
+    name: "context_compress",
+    description: "手动触发上下文压缩",
+    input_schema: {
+      type: "object" as const,
+      properties: {}
+    }
+  },
+  {
+    name: "context_config",
+    description: "配置上下文压缩参数",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        maxTurns: { type: "number" as const, description: "最大保留轮数" },
+        keepRecent: { type: "number" as const, description: "完整保留最近 N 轮" },
+        maxToolOutput: { type: "number" as const, description: "工具输出最大字符数" },
+        autoCompress: { type: "boolean" as const, description: "是否自动压缩" }
+      }
+    }
+  },
+  {
+    name: "context_summary",
+    description: "查看历史摘要",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        limit: { type: "number" as const, description: "返回摘要数量，默认5" }
+      }
+    }
+  },
+  // V14 新增: 插件工具
+  {
+    name: "plugin_list",
+    description: "列出所有已加载的插件",
+    input_schema: {
+      type: "object" as const,
+      properties: {}
+    }
+  },
+  {
+    name: "plugin_load",
+    description: "加载插件 (内置: weather, calculator, timestamp)",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        source: { type: "string" as const, description: "插件名称或路径" }
+      },
+      required: ["source"]
+    }
+  },
+  {
+    name: "plugin_unload",
+    description: "卸载插件",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        plugin_id: { type: "string" as const, description: "插件ID" }
+      },
+      required: ["plugin_id"]
+    }
+  },
+  {
+    name: "plugin_config",
+    description: "查看或更新插件配置",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        plugin_id: { type: "string" as const, description: "插件ID" },
+        updates: { type: "object" as const, description: "要更新的配置项" }
+      },
+      required: ["plugin_id"]
+    }
+  },
+  {
+    name: "plugin_info",
+    description: "查看插件详细信息",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        plugin_id: { type: "string" as const, description: "插件ID" }
+      },
+      required: ["plugin_id"]
+    }
   }
 ];
 
@@ -2343,13 +3997,24 @@ function runSubagent(task: string, context?: string): string {
 async function chat(prompt: string, history: Anthropic.MessageParam[] = []): Promise<string> {
   history.push({ role: "user", content: prompt });
 
+  // V13.5: 自动压缩上下文
+  const compressed = contextCompressor.compress(history);
+  if (compressed.length < history.length) {
+    history.length = 0;
+    history.push(...compressed);
+    console.log(`\x1b[90m[压缩] 上下文已压缩: ${history.length} 条消息\x1b[0m`);
+  }
+
   while (true) {
     // 构建请求
+    // 合并基础工具和插件工具
+    const allTools = [...TOOLS, ...pluginManager.getTools()];
+    
     const request = {
       model: MODEL,
       system: [{ type: "text", text: identitySystem.getEnhancedSystemPrompt(BASE_SYSTEM) }],
       messages: history,
-      tools: TOOLS,
+      tools: allTools,
       max_tokens: 8000
     };
 
@@ -2452,7 +4117,119 @@ async function chat(prompt: string, history: Anthropic.MessageParam[] = []): Pro
             break;
           case "channel_start": output = await channelManager.startAll(); break;
           case "channel_stop": await channelManager.stopAll(); output = '所有渠道已停止'; break;
-          default: output = `未知工具: ${toolName}`;
+          // V12 新增: Security 工具
+          case "security_check": 
+            const checkResult = securitySystem.checkPermission(args.tool, args.args || {});
+            output = checkResult.allowed 
+              ? `✓ 操作允许${checkResult.needsConfirm ? ' (需要确认)' : ''}`
+              : `✗ 操作拒绝: ${checkResult.reason}`;
+            break;
+          case "security_audit": 
+            output = securitySystem.getAuditLogs(args.days || 7, args.limit || 100); 
+            break;
+          case "security_policy":
+            if (args.action === 'set_tool_risk' && args.tool && args.risk_level) {
+              output = securitySystem.setToolRiskLevel(args.tool, args.risk_level);
+            } else if (args.action === 'toggle_audit') {
+              output = securitySystem.updatePolicy({ auditEnabled: !securitySystem['policy'].auditEnabled });
+            } else if (args.action === 'toggle_confirm') {
+              output = securitySystem.updatePolicy({ confirmDangerous: !securitySystem['policy'].confirmDangerous });
+            } else {
+              output = securitySystem.getPolicySummary();
+            }
+            break;
+          case "security_mask":
+            output = securitySystem.maskSensitive(args.text);
+            break;
+          case "security_context":
+            securitySystem.setContext({
+              userId: args.userId,
+              channel: args.channel,
+              chatType: args.chatType,
+              trustLevel: args.trustLevel || 'normal'
+            });
+            output = `安全上下文已更新: ${JSON.stringify(args)}`;
+            break;
+          // V13 新增: 自进化工具
+          case "evolve_analyze":
+            output = evolutionSystem.analyze(args.days || 7);
+            break;
+          case "evolve_suggest":
+            output = evolutionSystem.suggest(args.focus);
+            break;
+          case "evolve_apply":
+            output = evolutionSystem.apply(args.suggestion_id, args.confirm);
+            break;
+          case "evolve_status":
+            output = evolutionSystem.status();
+            break;
+          case "evolve_history":
+            output = evolutionSystem.history(args.limit || 20);
+            break;
+          // V13.5 新增: 上下文压缩工具
+          case "context_status":
+            output = contextCompressor.getStatus();
+            break;
+          case "context_compress":
+            const compressResult = contextCompressor.manualCompress(history);
+            history.length = 0;
+            history.push(...compressResult.compressed);
+            output = compressResult.report;
+            break;
+          case "context_config":
+            output = contextCompressor.updateConfig({
+              maxTurns: args.maxTurns,
+              keepRecent: args.keepRecent,
+              maxToolOutput: args.maxToolOutput,
+              autoCompress: args.autoCompress
+            });
+            break;
+          case "context_summary":
+            output = contextCompressor.getSummaries(args.limit || 5);
+            break;
+          // V14 新增: 插件工具
+          case "plugin_list":
+            output = pluginManager.list();
+            break;
+          case "plugin_load":
+            output = await pluginManager.load(args.source);
+            break;
+          case "plugin_unload":
+            output = await pluginManager.unload(args.plugin_id);
+            break;
+          case "plugin_config":
+            if (args.updates) {
+              output = pluginManager.setConfig(args.plugin_id, args.updates as Record<string, unknown>);
+            } else {
+              const config = pluginManager.getConfig(args.plugin_id);
+              output = config ? JSON.stringify(config, null, 2) : `插件 ${args.plugin_id} 未加载`;
+            }
+            break;
+          case "plugin_info":
+            output = pluginManager.getInfo(args.plugin_id);
+            break;
+          default:
+            // 尝试执行插件工具
+            const pluginResult = await pluginManager.executeTool(toolName, args);
+            if (pluginResult !== null) {
+              output = pluginResult;
+            } else {
+              output = `未知工具: ${toolName}`;
+            }
+        }
+
+        // V13.5: 截断工具输出
+        output = contextCompressor.truncateToolOutput(output);
+
+        // V12: 记录审计日志
+        const riskLevel = securitySystem.getToolRiskLevel(toolName);
+        if (riskLevel !== 'safe') {
+          securitySystem.logAudit({
+            tool: toolName,
+            args,
+            riskLevel,
+            decision: 'allowed'
+          });
         }
 
         // V10: 记录工具调用到内省系统
@@ -2489,9 +4266,10 @@ if (process.argv[2]) {
   });
   const history: Anthropic.MessageParam[] = [];
 
-  console.log(`\nOpenClaw V11 - 多渠道 Agent (${identitySystem.getName()})`);
-  console.log(`${memory.stats()} | Claw: ${clawLoader.count} 个 | Channels: ${channelManager.status()}`);
-  console.log(`输入 'q' 或 'exit' 退出，空行继续等待���入\n`);
+  console.log(`\nOpenClaw V14 - 可扩展 Agent + 插件系统 (${identitySystem.getName()})`);
+  console.log(`${memory.stats()} | Claw: ${clawLoader.count} 个 | Plugins: ${pluginManager.count} 个`);
+  console.log(`Channels: ${channelManager.status()} | Evolution: active`);
+  console.log(`输入 'q' 或 'exit' 退出，空行继续等待输入\n`);
 
   const prompt = () => {
     rl.question("\x1b[36m>> \x1b[0m", async (input) => {

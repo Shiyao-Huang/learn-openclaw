@@ -30,7 +30,8 @@
 | V12 | `v12-agent.ts` | 2766 | 50 | Security system |
 | V13 | `v13-agent.ts` | 3237 | 55 | Self-evolution system |
 | V13.5 | `v13.5-agent.ts` | 3619 | 59 | Context compression |
-| **Total** | | **22753** | | |
+| V14 | `v14-agent.ts` | 4311 | 64 | Plugin system |
+| **Total** | | **27064** | | |
 
 Notes:
 - V5.5-V9 all expose the `Skill` tool with `skill` input.
@@ -82,6 +83,7 @@ npx tsx v0-agent.ts
 - [V12 Security](./docs/v12-安全策略系统.md)
 - [V13 Evolution](./docs/v13-自进化系统.md)
 - [V13.5 Compression](./docs/v13.5-上下文压缩.md)
+- [V14 Plugin](./docs/v14-插件系统.md)
 - [Evolution Overview](./docs/EVOLUTION.md)
 
 ### Diff guides
@@ -101,6 +103,7 @@ npx tsx v0-agent.ts
 - [V11 -> V12](./docs/evolution/v11-to-v12.md)
 - [V12 -> V13](./docs/evolution/v12-to-v13.md)
 - [V13 -> V13.5](./docs/evolution/v13-to-v13.5.md)
+- [V13.5 -> V14](./docs/evolution/v13.5-to-v14.md)
 
 ---
 
