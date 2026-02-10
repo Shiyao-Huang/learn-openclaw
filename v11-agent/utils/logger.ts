@@ -5,27 +5,14 @@
  * - Session 日志：记录会话级别信息
  * - 对话日志：记录每次对话详情
  * - Token 统计：定期持久化统计数据
- * - 界面日志：美化控制台输出
+ * - 界面日志：美化控制台输出（使用卡片系统）
+ * - Todo 追踪：常驻显示任务列表
  */
 
 import * as fs from "fs";
 import * as fsp from "fs/promises";
 import * as path from "path";
-
-// ============================================================================
-// 颜色常量
-// ============================================================================
-
-const colors = {
-  reset: "\x1b[0m",
-  dim: "\x1b[90m",
-  cyan: "\x1b[36m",
-  green: "\x1b[32m",
-  yellow: "\x1b[33m",
-  red: "\x1b[31m",
-  magenta: "\x1b[35m",
-  blue: "\x1b[34m",
-};
+import { cards } from "./terminal-cards.js";
 
 // ============================================================================
 // Token 统计
@@ -107,18 +94,11 @@ export class SessionLogger {
   }
 
   getTokenStatsReport(): string {
-    const start = new Date(this.tokenStats.sessionStart);
-    const elapsed = (Date.now() - start.getTime()) / 1000;
-    const tokensPerSecond = elapsed > 0 ? (this.tokenStats.totalTokens / elapsed).toFixed(1) : "0";
+    return cards.tokenStats(this.tokenStats);
+  }
 
-    return `📊 Token 统计:
-  - 输入: ${this.tokenStats.inputTokens.toLocaleString()} tokens
-  - 输出: ${this.tokenStats.outputTokens.toLocaleString()} tokens
-  - 总计: ${this.tokenStats.totalTokens.toLocaleString()} tokens
-  - 请求数: ${this.tokenStats.requestCount}
-  - 工具调用: ${this.tokenStats.toolCallCount}
-  - 平均速率: ${tokensPerSecond} tokens/s
-  - 会话时长: ${Math.floor(elapsed / 60)}m ${Math.floor(elapsed % 60)}s`;
+  getGoodbyeReport(): string {
+    return cards.goodbye(this.tokenStats);
   }
 
   // --------------------------------------------------------------------------
@@ -163,54 +143,67 @@ export class SessionLogger {
   }
 
   // --------------------------------------------------------------------------
-  // 界面日志
+  // 界面日志（使用卡片系统）
   // --------------------------------------------------------------------------
 
-  logChannelReceive(channel: string, userId: string, preview: string): void {
-    const time = new Date().toLocaleTimeString("zh-CN", { hour12: false });
-    console.log(
-      `${colors.dim}[${time}]${colors.reset} ` +
-        `${colors.cyan}[${channel} <- ${userId.slice(0, 16)}]${colors.reset} ` +
-        `${preview.slice(0, 50)}${preview.length > 50 ? "..." : ""}`
-    );
+  logChannelReceive(channel: string, userId: string, message: string, userName?: string): void {
+    console.log(cards.channelReceive(channel, userId, message, userName));
   }
 
-  logChannelSend(channel: string, chatId: string, preview: string): void {
-    const time = new Date().toLocaleTimeString("zh-CN", { hour12: false });
-    console.log(
-      `${colors.dim}[${time}]${colors.reset} ` +
-        `${colors.green}[${channel} -> ${chatId.slice(0, 16)}]${colors.reset} ` +
-        `${preview.slice(0, 50)}${preview.length > 50 ? "..." : ""}`
-    );
+  logChannelSend(channel: string, chatId: string, message: string): void {
+    console.log(cards.channelSend(channel, chatId, message));
   }
 
   logConsoleInput(input: string): void {
-    const time = new Date().toLocaleTimeString("zh-CN", { hour12: false });
-    console.log(
-      `${colors.dim}[${time}]${colors.reset} ` +
-        `${colors.magenta}[console] >> ${colors.reset}` +
-        `${input.slice(0, 60)}${input.length > 60 ? "..." : ""}`
-    );
+    console.log(cards.consoleInput(input));
   }
 
-  logToolCall(toolName: string): void {
-    console.log(`${colors.yellow}[Tool] ${toolName}${colors.reset}`);
+  logToolCall(toolName: string, args?: Record<string, any>): void {
+    // 使用紧凑版，带参数预览
+    console.log(cards.toolCallCompact(toolName, args));
   }
 
   logDedup(messageId: string): void {
-    console.log(`${colors.dim}[去重] 跳过重复消息: ${messageId.slice(0, 30)}${colors.reset}`);
+    console.log(cards.dedup(messageId));
   }
 
   logError(message: string): void {
-    console.log(`${colors.red}[Error] ${message}${colors.reset}`);
+    console.log(cards.error(message));
   }
 
   logInfo(message: string): void {
-    console.log(`${colors.blue}[Info] ${message}${colors.reset}`);
+    console.log(cards.info(message));
   }
 
   logRequestLog(filePath: string): void {
-    console.log(`${colors.dim}[LOG] ${filePath}${colors.reset}`);
+    console.log(cards.requestLog(filePath));
+  }
+
+  // --------------------------------------------------------------------------
+  // Todo 追踪
+  // --------------------------------------------------------------------------
+
+  private currentTodos: Array<{ id: string; content: string; status: "pending" | "in_progress" | "completed" }> = [];
+
+  updateTodos(todos: Array<{ id: string; content: string; status: "pending" | "in_progress" | "completed" }>): void {
+    this.currentTodos = todos;
+  }
+
+  getTodos(): Array<{ id: string; content: string; status: "pending" | "in_progress" | "completed" }> {
+    return this.currentTodos;
+  }
+
+  logTodoList(): void {
+    if (this.currentTodos.length > 0) {
+      console.log(cards.todoList(this.currentTodos));
+    }
+  }
+
+  logTodoStatusBar(): void {
+    const bar = cards.todoStatusBar(this.currentTodos);
+    if (bar) {
+      console.log(bar);
+    }
   }
 
   // --------------------------------------------------------------------------

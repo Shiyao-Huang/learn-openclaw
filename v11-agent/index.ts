@@ -200,10 +200,22 @@ async function chat(
     const toolResults: Anthropic.ToolResultBlockParam[] = [];
 
     for (const toolUse of toolUseBlocks) {
-      logger.logToolCall(toolUse.name);
+      const toolArgs = toolUse.input as Record<string, any>;
+      logger.logToolCall(toolUse.name, toolArgs);
       logger.addToolCall(convIndex, toolUse.name);
       logger.incrementToolCalls();
-      const result = await executeTool(toolUse.name, toolUse.input as Record<string, any>);
+
+      // 如果是 TodoWrite，更新 Todo 追踪
+      if (toolUse.name === "TodoWrite" && toolArgs.todos) {
+        logger.updateTodos(toolArgs.todos.map((t: any, i: number) => ({
+          id: String(i + 1),
+          content: t.content || t.task || "",
+          status: t.status || "pending",
+        })));
+        logger.logTodoStatusBar();
+      }
+
+      const result = await executeTool(toolUse.name, toolArgs);
       toolResults.push({
         type: "tool_result",
         tool_use_id: toolUse.id,
@@ -365,15 +377,14 @@ async function main() {
     console.log(`\nOpenClaw V11 - 模块化 Agent (${identitySystem.getName()})`);
     console.log(`${memoryManager.stats()} | ${sessionManager.stats()} | Claw: ${clawLoader.count} 个`);
     console.log(`控制台和飞书会话已分离，各自独立上下文`);
-    console.log(`输入 'q' 退出 | '/stats' 查看 Token 统计\n`);
+    console.log(`输入 'q' 退出 | '/stats' Token | '/todo' 任务\n`);
 
     const prompt = () => {
       rl.question("\x1b[36m>> \x1b[0m", async (input) => {
         const q = input.trim();
 
         if (q === "q" || q === "exit" || q === "quit") {
-          console.log("再见！");
-          console.log(logger.getTokenStatsReport());
+          console.log(logger.getGoodbyeReport());
           await logger.dispose();
           await channelManager.stopAll();
           rl.close();
@@ -382,6 +393,12 @@ async function main() {
 
         if (q === "/stats" || q === "/tokens") {
           console.log(logger.getTokenStatsReport());
+          prompt();
+          return;
+        }
+
+        if (q === "/todo" || q === "/todos") {
+          logger.logTodoList();
           prompt();
           return;
         }
