@@ -11,10 +11,10 @@ import urllib.request
 import urllib.parse
 from datetime import datetime, timezone
 
-# 配置
-ACCESS_KEY_ID = "os.environ.get("ALIYUN_ACCESS_KEY_ID", "")"
-ACCESS_KEY_SECRET = "os.environ.get("ALIYUN_ACCESS_KEY_SECRET", "")"
-APP_KEY = "os.environ.get("TINGWU_APP_KEY", "")"
+# 配置 - 从环境变量读取
+ACCESS_KEY_ID = os.environ.get("ALIYUN_ACCESS_KEY_ID", "")
+ACCESS_KEY_SECRET = os.environ.get("ALIYUN_ACCESS_KEY_SECRET", "")
+APP_KEY = os.environ.get("TINGWU_APP_KEY", "")
 
 def sign(method, url, headers, body=None):
     """生成签名"""
