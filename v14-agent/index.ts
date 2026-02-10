@@ -1,14 +1,15 @@
 #!/usr/bin/env tsx
 /**
- * v12-agent/index.ts - OpenClaw V12 模块化入口
+ * v14-agent/index.ts - OpenClaw V14 模块化入口
  * 
- * V12 新增：安全策略系统
- * - 工具权限分级: safe/confirm/dangerous
- * - 上下文感知: 根据渠道/用户调整策略
- * - 审计日志: 记录所有敏感操作
- * - 敏感数据保护: 自动识别和遮蔽
+ * V14 新增：插件系统
+ * - 插件接口: 统一的插件定义规范
+ * - 工具热插拔: 运行时加载/卸载工具
+ * - 生命周期钩子: 插件可以响应 Agent 事件
  * 
- * 基于 V11 的模块化架构
+ * 继承 V13: 自进化系统
+ * 继承 V12: 安全策略系统
+ * 继承 V11: 模块化架构
  */
 
 import Anthropic from "@anthropic-ai/sdk";
@@ -19,7 +20,7 @@ import * as readline from "readline";
 import * as dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 
-// 模块导入
+// V11 模块
 import { MemoryManager } from "./memory/index.js";
 import { SessionManager } from "./session/manager.js";
 import { ChannelManager } from "./channel/index.js";
@@ -28,15 +29,29 @@ import { IntrospectionTracker } from "./introspect/tracker.js";
 import { ClawLoader } from "./claw/loader.js";
 import { tools as baseTools, createExecutor } from "./tools/index.js";
 import { MessageDeduplicator } from "./utils/dedup.js";
-import { createSessionLogger, SessionLogger } from "./utils/logger.js";
+import { createSessionLogger } from "./utils/logger.js";
 
-// V12 新增：安全模块
+// V12 安全模块
 import { 
   SecuritySystem, 
   getSecurityTools, 
   createSecurityHandlers,
   TrustLevel 
 } from "./security/index.js";
+
+// V13 进化模块
+import {
+  EvolutionSystem,
+  getEvolutionTools,
+  createEvolutionHandlers
+} from "./evolution/index.js";
+
+// V14 新增：插件模块
+import {
+  PluginManager,
+  getPluginTools,
+  createPluginHandlers
+} from "./plugin/index.js";
 
 // 加载 .env
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -73,10 +88,9 @@ const client = new Anthropic({
   baseURL: config.baseURL,
 });
 
-// 日志系统
 const logger = createSessionLogger(config.workDir, 60000);
 
-// 核心模块
+// V11 核心模块
 const memoryManager = new MemoryManager(config.workDir);
 const sessionManager = new SessionManager(config.workDir);
 const channelManager = new ChannelManager(config.workDir);
@@ -84,19 +98,24 @@ const identitySystem = new IdentitySystem(config.identityDir, config.idSampleDir
 const introspection = new IntrospectionTracker(config.workDir);
 const clawLoader = new ClawLoader(config.clawDir);
 
-// V12 新增：安全系统
+// V12 安全系统
 const securitySystem = new SecuritySystem(config.workDir);
+
+// V13 进化系统
+const evolutionSystem = new EvolutionSystem(config.workDir);
+
+// V14 新增：插件管理器
+const pluginManager = new PluginManager(config.workDir);
 
 // 加载身份
 identitySystem.load();
 
-// 合并工具列表
-const tools = [...baseTools, ...getSecurityTools()];
-
-// 创建安全工具处理器
+// 创建处理器
 const securityHandlers = createSecurityHandlers(securitySystem);
+const evolutionHandlers = createEvolutionHandlers(evolutionSystem);
+const pluginHandlers = createPluginHandlers(pluginManager);  // V14 新增
 
-// 创建工具执行器（包装安全检查）
+// 基础执行器
 const baseExecutor = createExecutor({
   workDir: config.workDir,
   bashTimeout: config.bashTimeout,
@@ -108,53 +127,91 @@ const baseExecutor = createExecutor({
   clawLoader,
 });
 
-// 带安全检查的执行器
+// 获取动态工具列表（包含插件工具）
+function getAllTools(): Anthropic.Tool[] {
+  const staticTools = [
+    ...baseTools, 
+    ...getSecurityTools(),
+    ...getEvolutionTools(),
+    ...getPluginTools()  // V14 新增
+  ];
+  
+  // V14 新增：添加插件提供的工具
+  const pluginTools = pluginManager.getAllTools().map(t => ({
+    name: t.name,
+    description: t.description,
+    input_schema: t.inputSchema as any
+  }));
+  
+  return [...staticTools, ...pluginTools] as Anthropic.Tool[];
+}
+
+// 带安全检查的执行器 (V12) + 进化追踪 (V13) + 插件工具 (V14)
 async function executeTool(name: string, args: Record<string, any>): Promise<string> {
+  const startTime = Date.now();
+  
+  // V14 新增：触发 before_tool_call 钩子
+  const hookResult = await pluginManager.triggerHook('before_tool_call', { tool: name, args });
+  if (hookResult.block) {
+    return `[插件拦截] ${hookResult.blockReason || '操作被插件阻止'}`;
+  }
+  if (hookResult.modified && hookResult.data) {
+    args = hookResult.data.args as Record<string, any> || args;
+  }
+  
   // 检查是否是安全工具
   if (name in securityHandlers) {
     return (securityHandlers as any)[name](args);
   }
   
-  // 安全检查
+  // 检查是否是进化工具
+  if (name in evolutionHandlers) {
+    return (evolutionHandlers as any)[name](args);
+  }
+  
+  // V14 新增：检查是否是插件管理工具
+  if (name in pluginHandlers) {
+    return await (pluginHandlers as any)[name](args);
+  }
+  
+  // V14 新增：检查是否是插件提供的工具
+  const pluginResult = await pluginManager.executeTool(name, args);
+  if (pluginResult !== null) {
+    // 触发 after_tool_call 钩子
+    await pluginManager.triggerHook('after_tool_call', { tool: name, args, result: pluginResult });
+    return pluginResult;
+  }
+  
+  // V12 安全检查
   const permission = securitySystem.checkPermission(name, args);
   
   if (!permission.allowed) {
-    securitySystem.audit({
-      tool: name,
-      args,
-      decision: 'denied',
-      reason: permission.reason,
-    });
+    securitySystem.audit({ tool: name, args, decision: 'denied', reason: permission.reason });
     return `[安全拒绝] ${permission.reason}`;
   }
   
-  // 需要确认的操作
   if (permission.needsConfirm) {
     const confirmed = await securitySystem.requestConfirmation(name, args);
     if (!confirmed) {
-      securitySystem.audit({
-        tool: name,
-        args,
-        decision: 'denied',
-        reason: '用户拒绝确认',
-      });
+      securitySystem.audit({ tool: name, args, decision: 'denied', reason: '用户拒绝确认' });
       return '[安全拒绝] 用户拒绝确认危险操作';
     }
-    securitySystem.audit({
-      tool: name,
-      args,
-      decision: 'confirmed',
-    });
+    securitySystem.audit({ tool: name, args, decision: 'confirmed' });
   } else {
-    securitySystem.audit({
-      tool: name,
-      args,
-      decision: 'allowed',
-    });
+    securitySystem.audit({ tool: name, args, decision: 'allowed' });
   }
   
   // 执行工具
-  return baseExecutor(name, args);
+  const result = await baseExecutor(name, args);
+  
+  // V13 进化追踪
+  const duration = Date.now() - startTime;
+  introspection.logToolCall(name, args, result, duration);
+  
+  // V14 新增：触发 after_tool_call 钩子
+  await pluginManager.triggerHook('after_tool_call', { tool: name, args, result, duration });
+  
+  return result;
 }
 
 // ============================================================================
@@ -164,51 +221,44 @@ async function executeTool(name: string, args: Record<string, any>): Promise<str
 function buildSystemPrompt(): string {
   const parts: string[] = [];
   
-  // 身份信息
   const identity = identitySystem.getSummary();
-  if (identity) {
-    parts.push(identity);
-  }
+  if (identity) parts.push(identity);
   
-  // 已加载的 Claw
   const clawContent = clawLoader.getLoadedContent();
-  if (clawContent) {
-    parts.push(clawContent);
-  }
+  if (clawContent) parts.push(clawContent);
   
-  // 时间上下文
   const now = new Date();
-  const timeContext = `当前时间: ${now.toLocaleString("zh-CN", { 
+  parts.push(`当前时间: ${now.toLocaleString("zh-CN", { 
     timeZone: "Asia/Shanghai",
-    weekday: "long",
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit"
-  })}`;
-  parts.push(timeContext);
+    weekday: "long", year: "numeric", month: "long", day: "numeric",
+    hour: "2-digit", minute: "2-digit"
+  })}`);
 
-  // V12 新增：安全上下文
+  // V12 安全上下文
   const securityContext = securitySystem.getContext();
   parts.push(`## 安全上下文
 - 信任等级: ${securityContext.trustLevel}
-- 渠道: ${securityContext.channel || '控制台'}
-- 聊天类型: ${securityContext.chatType || '直接对话'}`);
+- 渠道: ${securityContext.channel || '控制台'}`);
 
-  // 系统注意事项
+  // V13 进化状态
+  const patterns = evolutionSystem.getPatterns();
+  if (patterns.length > 0) {
+    parts.push(`## 行为模式
+${patterns.slice(0, 3).map(p => `- ${p.sequence.join(' → ')}`).join('\n')}`);
+  }
+
+  // V14 新增：已加载插件
+  const plugins = pluginManager.list();
+  if (plugins.length > 0) {
+    parts.push(`## 已加载插件
+${plugins.map(p => `- ${p.name}: ${p.tools.join(', ') || '无工具'}`).join('\n')}`);
+  }
+
   parts.push(`## 重要提醒
-- macOS 环境：grep 不支持 -P (Perl正则)，请用 grep -E 或 egrep
-- 记忆工具：用户说"记住"时，使用 daily_write 或 longterm_append
-- 搜索记忆：用 memory_search_all 搜索
-- 安全系统：危险操作需要确认，群聊中部分工具被禁用
-- 重要：读写大文件时，必须使用分段操作
+- 安全系统：危险操作需要确认
+- 进化系统：使用 evolution_analyze 分析行为
+- 插件系统：使用 plugin_load 加载插件 (内置: weather, calculator, timestamp)`);
 
-## 任务规划
-- 复杂任务先用 TodoWrite 创建任务列表
-- 每完成一步更新任务状态`);
-
-  // 可用 Claw
   const clawList = clawLoader.list();
   if (clawList !== "无可用技能") {
     parts.push(`\n## 可用技能\n${clawList}`);
@@ -229,51 +279,29 @@ async function chat(
   userId?: string,
   chatType?: 'direct' | 'group'
 ): Promise<string> {
-  // V12 新增：设置安全上下文
   securitySystem.setContext({
-    channel,
-    userId,
-    chatType,
+    channel, userId, chatType,
     trustLevel: determineTrustLevel(channel, userId, chatType),
   });
 
-  // 开始对话日志
-  const convIndex = logger.startConversation(channel, chatId, input);
+  // V14 新增：触发 message_received 钩子
+  await pluginManager.triggerHook('message_received', { input, channel, chatId, userId });
 
-  // 自动加载相关 Claw
   clawLoader.autoLoad(input);
 
   const systemPrompt = buildSystemPrompt();
-  const messages: Anthropic.MessageParam[] = [
-    ...history,
-    { role: "user", content: input }
-  ];
+  const messages: Anthropic.MessageParam[] = [...history, { role: "user", content: input }];
+  const tools = getAllTools();  // V14: 动态获取工具列表
 
-  // 构建请求
-  const request: Anthropic.MessageCreateParamsNonStreaming = {
+  let response = await client.messages.create({
     model: config.model,
     max_tokens: config.maxTokens,
     system: [{ type: "text" as const, text: systemPrompt }],
-    tools: tools as Anthropic.Tool[],
+    tools,
     messages,
-  };
-
-  // 记录请求日志
-  const logDir = path.join(config.workDir, "logs");
-  if (!fs.existsSync(logDir)) await fsp.mkdir(logDir, { recursive: true });
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const logFile = path.join(logDir, `request-${timestamp}.json`);
-  await fsp.writeFile(logFile, JSON.stringify(request, null, 2));
-  logger.logRequestLog(logFile);
-
-  let response = await client.messages.create(request);
-  logger.updateTokens(response.usage);
-  logger.updateConversation(convIndex, {
-    inputTokens: response.usage.input_tokens,
-    outputTokens: response.usage.output_tokens,
   });
+  logger.updateTokens(response.usage);
 
-  // 工具调用循环
   while (response.stop_reason === "tool_use") {
     const toolUseBlocks = response.content.filter(
       (b): b is Anthropic.ToolUseBlock => b.type === "tool_use"
@@ -283,26 +311,8 @@ async function chat(
 
     for (const toolUse of toolUseBlocks) {
       const toolArgs = toolUse.input as Record<string, any>;
-      logger.logToolCall(toolUse.name, toolArgs);
-      logger.addToolCall(convIndex, toolUse.name);
-      logger.incrementToolCalls();
-
-      // TodoWrite 追踪
-      if (toolUse.name === "TodoWrite" && toolArgs.todos) {
-        logger.updateTodos(toolArgs.todos.map((t: any, i: number) => ({
-          id: String(i + 1),
-          content: t.content || t.task || "",
-          status: t.status || "pending",
-        })));
-        logger.logTodoStatusBar();
-      }
-
       const result = await executeTool(toolUse.name, toolArgs);
-      toolResults.push({
-        type: "tool_result",
-        tool_use_id: toolUse.id,
-        content: result,
-      });
+      toolResults.push({ type: "tool_result", tool_use_id: toolUse.id, content: result });
     }
 
     messages.push({ role: "assistant", content: response.content });
@@ -312,58 +322,26 @@ async function chat(
       model: config.model,
       max_tokens: config.maxTokens,
       system: [{ type: "text" as const, text: systemPrompt }],
-      tools: tools as Anthropic.Tool[],
+      tools,
       messages,
     });
     logger.updateTokens(response.usage);
   }
   
-  // 提取文本响应
-  const textBlocks = response.content.filter(
-    (b): b is Anthropic.TextBlock => b.type === "text"
-  );
+  const responseText = response.content
+    .filter((b): b is Anthropic.TextBlock => b.type === "text")
+    .map(b => b.text).join("\n");
 
-  const responseText = textBlocks.map(b => b.text).join("\n");
-  logger.endConversation(convIndex, responseText);
+  // V14 新增：触发 message_sending 钩子
+  await pluginManager.triggerHook('message_sending', { response: responseText, channel, chatId });
 
   return responseText;
 }
 
-// ============================================================================
-// V12 新增：信任等级判断
-// ============================================================================
-
-function determineTrustLevel(
-  channel: string, 
-  userId?: string, 
-  chatType?: 'direct' | 'group'
-): TrustLevel {
-  // 控制台 = owner
-  if (channel === 'console') {
-    return 'owner';
-  }
-  
-  // 群聊 = normal
-  if (chatType === 'group') {
-    return 'normal';
-  }
-  
-  // 私聊 = trusted（可以根据 userId 进一步细分）
+function determineTrustLevel(channel: string, userId?: string, chatType?: 'direct' | 'group'): TrustLevel {
+  if (channel === 'console') return 'owner';
+  if (chatType === 'group') return 'normal';
   return 'trusted';
-}
-
-// ============================================================================
-// 注册渠道插件
-// ============================================================================
-
-async function registerPlugins() {
-  try {
-    const { FeishuChannel } = await import('../plug/feishu/index.js');
-    channelManager.register(new FeishuChannel());
-    console.log('\x1b[32m[Plugin] 飞书插件已加载\x1b[0m');
-  } catch (e: any) {
-    console.log(`\x1b[33m[Plugin] 飞书插件加载失败: ${e.message}\x1b[0m`);
-  }
 }
 
 // ============================================================================
@@ -372,135 +350,77 @@ async function registerPlugins() {
 
 async function main() {
   console.log('\x1b[36m╔════════════════════════════════════════╗\x1b[0m');
-  console.log('\x1b[36m║     OpenClaw V12 - 安全策略系统        ║\x1b[0m');
+  console.log('\x1b[36m║     OpenClaw V14 - 插件系统            ║\x1b[0m');
+  console.log('\x1b[36m║     (继承 V13 进化 + V12 安全)         ║\x1b[0m');
   console.log('\x1b[36m╚════════════════════════════════════════╝\x1b[0m');
-  
-  await registerPlugins();
+
+  // V14 新增：自动加载内置插件
+  console.log('\n加载内置插件...');
+  await pluginManager.load('calculator');
+  await pluginManager.load('timestamp');
 
   const consoleHistory: Anthropic.MessageParam[] = [];
-  const channelHistories: Map<string, Anthropic.MessageParam[]> = new Map();
-
-  function getChannelHistory(chatId: string): Anthropic.MessageParam[] {
-    if (!channelHistories.has(chatId)) {
-      channelHistories.set(chatId, []);
-    }
-    return channelHistories.get(chatId)!;
-  }
-
-  const dedup = new MessageDeduplicator({ ttl: 60000 });
 
   async function processInput(
     input: string, 
     source: string, 
     history: Anthropic.MessageParam[], 
-    channel: string = "console", 
-    chatId: string = "default",
-    userId?: string,
-    chatType?: 'direct' | 'group'
+    channel: string = "console"
   ): Promise<string> {
     if (source === "console") {
-      logger.logConsoleInput(input);
-      
-      // V12 新增：处理安全确认命令
       if (input.startsWith('confirm ')) {
-        const id = input.slice(8).trim();
-        if (securitySystem.handleConfirmation(id, true)) {
-          return '已确认';
-        }
-        return '无效的确认 ID';
+        return securitySystem.handleConfirmation(input.slice(8).trim(), true) ? '已确认' : '无效ID';
       }
       if (input.startsWith('deny ')) {
-        const id = input.slice(5).trim();
-        if (securitySystem.handleConfirmation(id, false)) {
-          return '已拒绝';
-        }
-        return '无效的确认 ID';
+        return securitySystem.handleConfirmation(input.slice(5).trim(), false) ? '已拒绝' : '无效ID';
       }
     }
 
-    try {
-      const response = await chat(input, history, channel, chatId, userId, chatType);
-      
-      if (source === "console") {
-        history.push({ role: "user", content: input });
-        history.push({ role: "assistant", content: response });
-      }
-      
-      return response;
-    } catch (error: any) {
-      const errorMsg = `错误: ${error.message}`;
-      console.error(`\x1b[31m${errorMsg}\x1b[0m`);
-      return errorMsg;
+    const response = await chat(input, history, channel);
+    
+    if (source === "console") {
+      history.push({ role: "user", content: input });
+      history.push({ role: "assistant", content: response });
     }
+    
+    return response;
   }
 
-  // 启动渠道监听
-  channelManager.startAll(async (msg) => {
-    if (dedup.isDuplicate(msg.id)) return;
-    
-    const history = getChannelHistory(msg.chatId);
-    const response = await processInput(
-      msg.content, 
-      msg.channel, 
-      history, 
-      msg.channel, 
-      msg.chatId,
-      msg.userId,
-      msg.chatType
-    );
-    
-    if (response) {
-      await channelManager.send(msg.channel, msg.chatId, response);
-    }
-  });
-
-  // 控制台交互
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
   console.log('\n输入消息开始对话，输入 /quit 退出');
-  console.log('输入 /audit 查看审计日志，/policy 查看安全策略\n');
+  console.log('V14 命令: /plugins (列出插件), /load <name> (加载插件)\n');
 
   const prompt = () => {
     rl.question("\x1b[32m你: \x1b[0m", async (input) => {
       input = input.trim();
+      if (!input) { prompt(); return; }
       
-      if (!input) {
-        prompt();
-        return;
-      }
-      
-      if (input === "/quit" || input === "/exit") {
+      if (input === "/quit") {
         console.log("\n再见！");
-        logger.save();
-        channelManager.stopAll();
         rl.close();
         process.exit(0);
       }
       
-      // V12 新增：快捷命令
-      if (input === "/audit") {
-        const logs = securitySystem.getAuditLogs({ limit: 10 });
-        console.log('\n最近审计日志:');
-        logs.forEach(log => {
-          console.log(`  [${new Date(log.timestamp).toLocaleString()}] ${log.tool}: ${log.decision}`);
-        });
-        console.log('');
-        prompt();
-        return;
+      // V14 新增快捷命令
+      if (input === "/plugins") {
+        const plugins = pluginManager.list();
+        console.log('\n已加载插件:');
+        plugins.forEach(p => console.log(`  [${p.enabled ? '✓' : '✗'}] ${p.id}: ${p.tools.join(', ') || '无工具'}`));
+        prompt(); return;
       }
       
-      if (input === "/policy") {
-        const policy = securitySystem.getPolicy();
-        console.log('\n当前安全策略:');
-        console.log(`  审计: ${policy.auditEnabled ? '启用' : '禁用'}`);
-        console.log(`  确认危险操作: ${policy.confirmDangerous ? '是' : '否'}`);
-        console.log(`  群聊禁用工具: ${policy.groupDenyList.join(', ')}`);
-        console.log('');
-        prompt();
-        return;
+      if (input.startsWith("/load ")) {
+        const name = input.slice(6).trim();
+        const result = await pluginManager.load(name);
+        console.log(`\n${result}`);
+        prompt(); return;
+      }
+      
+      // V13 命令
+      if (input === "/analyze") {
+        console.log('\n' + evolutionSystem.generateReport(7));
+        prompt(); return;
       }
       
       const response = await processInput(input, "console", consoleHistory);
