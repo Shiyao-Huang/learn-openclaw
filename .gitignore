@@ -20,3 +20,4 @@ memory/
 .idea/
 .vscode/
 nanobot/
+.introspection/behavior_*.jsonl
