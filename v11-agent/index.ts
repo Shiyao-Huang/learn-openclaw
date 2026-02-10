@@ -27,6 +27,7 @@ import { IntrospectionTracker } from "./introspect/tracker.js";
 import { ClawLoader } from "./claw/loader.js";
 import { tools, createExecutor } from "./tools/index.js";
 import { MessageDeduplicator } from "./utils/dedup.js";
+import { createSessionLogger, SessionLogger } from "./utils/logger.js";
 
 // 加载 .env
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -64,43 +65,10 @@ const client = new Anthropic({
 });
 
 // ============================================================================
-// Token 统计
+// 日志系统（包含 Token 统计）
 // ============================================================================
 
-interface TokenStats {
-  inputTokens: number;
-  outputTokens: number;
-  totalTokens: number;
-  requestCount: number;
-  sessionStart: Date;
-}
-
-const tokenStats: TokenStats = {
-  inputTokens: 0,
-  outputTokens: 0,
-  totalTokens: 0,
-  requestCount: 0,
-  sessionStart: new Date(),
-};
-
-function updateTokenStats(usage: { input_tokens: number; output_tokens: number }) {
-  tokenStats.inputTokens += usage.input_tokens;
-  tokenStats.outputTokens += usage.output_tokens;
-  tokenStats.totalTokens += usage.input_tokens + usage.output_tokens;
-  tokenStats.requestCount++;
-}
-
-function getTokenStatsReport(): string {
-  const elapsed = (Date.now() - tokenStats.sessionStart.getTime()) / 1000;
-  const tokensPerSecond = elapsed > 0 ? (tokenStats.totalTokens / elapsed).toFixed(1) : "0";
-  return `📊 Token 统计:
-  - 输入: ${tokenStats.inputTokens.toLocaleString()} tokens
-  - 输出: ${tokenStats.outputTokens.toLocaleString()} tokens
-  - 总计: ${tokenStats.totalTokens.toLocaleString()} tokens
-  - 请求数: ${tokenStats.requestCount}
-  - 平均速率: ${tokensPerSecond} tokens/s
-  - 会话时长: ${Math.floor(elapsed / 60)}m ${Math.floor(elapsed % 60)}s`;
-}
+const logger = createSessionLogger(config.workDir, 60000); // 每分钟自动保存
 
 const memoryManager = new MemoryManager(config.workDir);
 const sessionManager = new SessionManager(config.workDir);
@@ -183,8 +151,13 @@ function buildSystemPrompt(): string {
 
 async function chat(
   input: string,
-  history: Anthropic.MessageParam[] = []
+  history: Anthropic.MessageParam[] = [],
+  channel: string = "console",
+  chatId: string = "default"
 ): Promise<string> {
+  // 开始对话日志
+  const convIndex = logger.startConversation(channel, chatId, input);
+
   // 自动加载相关 Claw
   clawLoader.autoLoad(input);
 
@@ -209,10 +182,14 @@ async function chat(
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const logFile = path.join(logDir, `request-${timestamp}.json`);
   await fsp.writeFile(logFile, JSON.stringify(request, null, 2));
-  console.log(`\x1b[90m[LOG] ${logFile}\x1b[0m`);
+  logger.logRequestLog(logFile);
 
   let response = await client.messages.create(request);
-  updateTokenStats(response.usage);
+  logger.updateTokens(response.usage);
+  logger.updateConversation(convIndex, {
+    inputTokens: response.usage.input_tokens,
+    outputTokens: response.usage.output_tokens,
+  });
 
   // 工具调用循环
   while (response.stop_reason === "tool_use") {
@@ -223,7 +200,9 @@ async function chat(
     const toolResults: Anthropic.ToolResultBlockParam[] = [];
 
     for (const toolUse of toolUseBlocks) {
-      console.log(`\x1b[33m[Tool] ${toolUse.name}\x1b[0m`);
+      logger.logToolCall(toolUse.name);
+      logger.addToolCall(convIndex, toolUse.name);
+      logger.incrementToolCalls();
       const result = await executeTool(toolUse.name, toolUse.input as Record<string, any>);
       toolResults.push({
         type: "tool_result",
@@ -242,15 +221,22 @@ async function chat(
       tools: tools as Anthropic.Tool[],
       messages,
     });
-    updateTokenStats(response.usage);
+    logger.updateTokens(response.usage);
+    logger.updateConversation(convIndex, {
+      inputTokens: (logger.getTokenStats().inputTokens),
+      outputTokens: (logger.getTokenStats().outputTokens),
+    });
   }
   
   // 提取文本响应
   const textBlocks = response.content.filter(
     (b): b is Anthropic.TextBlock => b.type === "text"
   );
-  
-  return textBlocks.map(b => b.text).join("\n");
+
+  const responseText = textBlocks.map(b => b.text).join("\n");
+  logger.endConversation(convIndex, responseText);
+
+  return responseText;
 }
 
 // ============================================================================
@@ -297,11 +283,13 @@ async function main() {
   const dedup = new MessageDeduplicator({ ttl: 60000 });
 
   // 处理输入的统一函数
-  async function processInput(input: string, source: string, history: Anthropic.MessageParam[]): Promise<string> {
-    console.log(`\x1b[35m[${source}] >> ${input}\x1b[0m`);
+  async function processInput(input: string, source: string, history: Anthropic.MessageParam[], channel: string = "console", chatId: string = "default"): Promise<string> {
+    if (source === "console") {
+      logger.logConsoleInput(input);
+    }
 
     try {
-      const response = await chat(input, history);
+      const response = await chat(input, history, channel, chatId);
 
       // 更新历史
       history.push({ role: "user", content: input });
@@ -315,7 +303,7 @@ async function main() {
       return response;
     } catch (e: any) {
       const errorMsg = `错误: ${e.message}`;
-      console.error(`\x1b[31m${errorMsg}\x1b[0m`);
+      logger.logError(errorMsg);
       return errorMsg;
     }
   }
@@ -325,25 +313,27 @@ async function main() {
     // 使用统一去重器检查并获取锁
     const msgKey = MessageDeduplicator.generateKey(ctx);
     if (!dedup.acquire(msgKey)) {
-      console.log(`\x1b[90m[去重] 跳过消息: ${msgKey.slice(0, 50)}\x1b[0m`);
+      logger.logDedup(msgKey);
       return;
     }
 
     try {
-      const source = `${ctx.channel}:${ctx.userName || ctx.userId}`;
+      // 记录接收消息
+      logger.logChannelReceive(ctx.channel, ctx.userId, ctx.text);
+
       currentReplyTarget = { channel: ctx.channel, chatId: ctx.chatId };
 
       // 使用该 chatId 独立的历史
       const history = getChannelHistory(ctx.chatId);
-      const response = await processInput(ctx.text, source, history);
+      const response = await processInput(ctx.text, `${ctx.channel}:${ctx.userName || ctx.userId}`, history, ctx.channel, ctx.chatId);
 
       // 自动回复到飞书
       if (response && response.trim() && response !== 'HEARTBEAT_OK') {
         try {
           await channelManager.send(ctx.channel, ctx.chatId, response);
-          console.log(`\x1b[32m[${ctx.channel}] << ${response.slice(0, 100)}...\x1b[0m`);
+          logger.logChannelSend(ctx.channel, ctx.chatId, response);
         } catch (e: any) {
-          console.error(`\x1b[31m[${ctx.channel}] 回复失败: ${e.message}\x1b[0m`);
+          logger.logError(`[${ctx.channel}] 回复失败: ${e.message}`);
         }
       }
 
@@ -362,7 +352,7 @@ async function main() {
   // 交互式 REPL
   if (process.argv[2]) {
     // 单次执行模式
-    const result = await processInput(process.argv[2], 'cli', consoleHistory);
+    const result = await processInput(process.argv[2], 'cli', consoleHistory, 'console', 'cli');
     console.log(result);
   } else {
     // REPL 模式
@@ -383,14 +373,15 @@ async function main() {
 
         if (q === "q" || q === "exit" || q === "quit") {
           console.log("再见！");
-          console.log(getTokenStatsReport());
+          console.log(logger.getTokenStatsReport());
+          await logger.dispose();
           await channelManager.stopAll();
           rl.close();
           return;
         }
 
         if (q === "/stats" || q === "/tokens") {
-          console.log(getTokenStatsReport());
+          console.log(logger.getTokenStatsReport());
           prompt();
           return;
         }
@@ -401,7 +392,7 @@ async function main() {
         }
 
         // 控制台使用独立的 consoleHistory
-        const response = await processInput(q, 'console', consoleHistory);
+        const response = await processInput(q, 'console', consoleHistory, 'console', 'repl');
         console.log(response);
 
         prompt();
@@ -429,6 +420,5 @@ export {
   introspection,
   clawLoader,
   config,
-  tokenStats,
-  getTokenStatsReport,
+  logger,
 };
