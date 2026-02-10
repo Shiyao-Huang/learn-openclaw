@@ -1,0 +1,4945 @@
+#!/usr/bin/env tsx
+/**
+ * v15-agent.ts - 多模型协作系统 (~4500行)
+ *
+ * 核心哲学: "不同任务使用不同模型，智能路由 + 成本优化"
+ * ================================================
+ * V15 在 V14 基础上增加 Multi-Model Collaboration：
+ * - 模型注册表: 统一管理多个模型的能力和成本
+ * - 任务分类器: 自动识别任务类型
+ * - 智能路由: 根据任务选择最合适的模型
+ * - 成本追踪: 记录和优化 API 成本
+ *
+ * Model 能力:
+ * - model_list: 列出所有可用模型
+ * - model_route: 根据任务推荐最佳模型
+ * - model_config: 配置模型参数
+ * - model_stats: 查看使用统计和成本
+ * - model_switch: 手动切换当前模型
+ *
+ * 设计原则:
+ * - 智能路由: 简单任务用轻量模型，复杂任务用强模型
+ * - 成本优化: 在保证质量的前提下最小化成本
+ * - 能力匹配: 不同模型有不同专长
+ * - 无缝切换: 对话中可以动态切换模型
+ *
+ * 演进路线:
+ * V0-V14: (见 v14-agent.ts)
+ * V15: 多模型协作 (当前)
+ */
+
+import Anthropic from "@anthropic-ai/sdk";
+import { execSync } from "child_process";
+import * as fs from "fs";
+import * as path from "path";
+import * as readline from "readline";
+import * as dotenv from 'dotenv';
+import { fileURLToPath } from 'url';
+import { createHash } from "crypto";
+
+// 加载 .env 文件（强制覆盖系统变量）
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: path.join(__dirname, '.env'), override: true });
+
+if (!process.env.ANTHROPIC_API_KEY) {
+  console.error("\x1b[31m错误: 未设置 ANTHROPIC_API_KEY\x1b[0m");
+  process.exit(1);
+}
+
+const client = new Anthropic({
+  apiKey: process.env.ANTHROPIC_API_KEY,
+  baseURL: process.env.ANTHROPIC_BASE_URL
+});
+const MODEL = process.env.MODEL_ID || "claude-opus-4-6";
+const WORKDIR = process.cwd();
+const CLAW_DIR = process.env.CLAW_DIR || path.join(WORKDIR, "claws");
+const IDENTITY_DIR = process.env.IDENTITY_DIR || WORKDIR;
+const ID_SAMPLE_DIR = process.env.ID_SAMPLE_DIR || path.join(__dirname, ".ID.sample");
+
+// ============================================================================
+// 本地向量记忆系统 - 零外部依赖
+// ============================================================================
+
+interface MemoryDoc {
+  id: string;
+  content: string;
+  source: string;
+  chunk: number;
+  timestamp: number;
+}
+
+class LocalMemory {
+  private memoryDir: string;
+  private indexFile: string;
+  private docs: Map<string, MemoryDoc> = new Map();
+
+  constructor() {
+    this.memoryDir = path.join(WORKDIR, "memory");
+    this.indexFile = path.join(this.memoryDir, ".index.json");
+    this.load();
+  }
+
+  // Jaccard 相似度 - 对中文更友好
+  private jaccardSimilarity(a: string, b: string): number {
+    const setA = new Set(a.toLowerCase());
+    const setB = new Set(b.toLowerCase());
+    const intersection = new Set([...setA].filter(x => setB.has(x)));
+    const union = new Set([...setA, ...setB]);
+    return intersection.size / union.size;
+  }
+
+  // 加载索引
+  private load() {
+    if (fs.existsSync(this.indexFile)) {
+      try {
+        const data = JSON.parse(fs.readFileSync(this.indexFile, "utf-8"));
+        for (const doc of data.docs || []) {
+          this.docs.set(doc.id, doc);
+        }
+      } catch (e) {
+        console.log("\x1b[33m警告: 索引文件损坏，重新创建\x1b[0m");
+      }
+    }
+  }
+
+  // 保存索引
+  private save() {
+    if (!fs.existsSync(this.memoryDir)) {
+      fs.mkdirSync(this.memoryDir, { recursive: true });
+    }
+    const data = { docs: Array.from(this.docs.values()), updated: Date.now() };
+    fs.writeFileSync(this.indexFile, JSON.stringify(data, null, 2));
+  }
+
+  // 文本分块
+  private chunkText(text: string, size: number = 500): string[] {
+    const chunks: string[] = [];
+    const paragraphs = text.split(/\n\n+/);
+    let current = "";
+
+    for (const para of paragraphs) {
+      if (current.length + para.length > size) {
+        if (current) chunks.push(current.trim());
+        current = para;
+      } else {
+        current += "\n\n" + para;
+      }
+    }
+    if (current) chunks.push(current.trim());
+    return chunks;
+  }
+
+  // 摄入文件
+  ingestFile(filePath: string): string {
+    const fullPath = path.resolve(filePath);
+    if (!fs.existsSync(fullPath)) return `错误: 文件不存在 ${filePath}`;
+
+    const content = fs.readFileSync(fullPath, "utf-8");
+    const chunks = content.split(/\n\n+/).filter(c => c.trim());
+    let added = 0;
+
+    for (let i = 0; i < chunks.length; i++) {
+      const id = createHash("md5").update(`${fullPath}:${i}:${chunks[i]}`).digest("hex");
+      if (!this.docs.has(id)) {
+        this.docs.set(id, {
+          id,
+          content: chunks[i],
+          source: path.relative(WORKDIR, fullPath),
+          chunk: i,
+          timestamp: Date.now()
+        });
+        added++;
+      }
+    }
+
+    this.save();
+    return `已摄入: ${filePath} (${added} 新块, 共 ${chunks.length} 块)`;
+  }
+
+  // 摄入目录
+  ingestDirectory(dir: string): string {
+    const fullDir = path.resolve(dir);
+    if (!fs.existsSync(fullDir)) return `错误: 目录不存在 ${dir}`;
+
+    const files = fs.readdirSync(fullDir)
+      .filter(f => f.endsWith(".md") && !f.startsWith("."))
+      .map(f => path.join(fullDir, f));
+
+    let total = 0;
+    for (const file of files) {
+      const result = this.ingestFile(file);
+      if (result.includes("已摄入")) total++;
+    }
+    return `已摄入 ${total} 个文件到记忆库`;
+  }
+
+  // 语义搜索 - 使用 Jaccard 相似度
+  search(query: string, maxResults: number = 5): string {
+    if (this.docs.size === 0) return "记忆库为空";
+
+    const results = Array.from(this.docs.values())
+      .map(doc => ({
+        doc,
+        score: this.jaccardSimilarity(query, doc.content)
+      }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, maxResults);
+
+    if (results.length === 0 || results[0].score < 0.01) {
+      return "未找到相关记忆";
+    }
+
+    return results
+      .map(({ doc, score }) => `[${doc.source}:${doc.chunk}] (相似度: ${(score * 100).toFixed(1)}%)\n${doc.content.slice(0, 200)}...`)
+      .join("\n\n");
+  }
+
+  // 读取原始文件
+  get(filePath: string, fromLine?: number, lines?: number): string {
+    const fullPath = path.join(this.memoryDir, filePath);
+    if (!fs.existsSync(fullPath)) return `错误: 文件不存在 ${filePath}`;
+
+    let content = fs.readFileSync(fullPath, "utf-8");
+    if (fromLine !== undefined) {
+      const allLines = content.split("\n");
+      const start = fromLine - 1;
+      const end = lines ? start + lines : allLines.length;
+      content = allLines.slice(start, end).join("\n");
+    }
+    return content;
+  }
+
+  // 追加到记忆文件
+  append(filePath: string, content: string): string {
+    const fullPath = path.join(this.memoryDir, filePath);
+    const dir = path.dirname(fullPath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+    const timestamp = new Date().toISOString();
+    const entry = `\n## ${timestamp}\n\n${content}\n`;
+    fs.appendFileSync(fullPath, entry, "utf-8");
+
+    // 自动重新摄入
+    this.ingestFile(fullPath);
+    return `已追加到: ${filePath}`;
+  }
+
+  // 统计信息
+  stats(): string {
+    return `记忆库: ${this.docs.size} 个片段`;
+  }
+}
+
+const memory = new LocalMemory();
+
+// ============================================================================
+// 任务管理系统 - V3 新增 (奥卡姆剃刀: 仅一个 TodoWrite 工具)
+// ============================================================================
+
+interface Todo {
+  content: string;
+  status: "pending" | "in_progress" | "completed";
+  activeForm: string;
+}
+
+class TodoManager {
+  private todos: Todo[] = [];
+
+  update(items: Todo[]): string {
+    // 验证规则
+    const inProgressCount = items.filter(t => t.status === "in_progress").length;
+    if (inProgressCount > 1) {
+      return `错误: 只能有 1 个 in_progress 任务，当前有 ${inProgressCount} 个`;
+    }
+    if (items.length > 20) {
+      return `错误: 最多 20 个任务，当前有 ${items.length} 个`;
+    }
+
+    this.todos = items;
+    return this.format();
+  }
+
+  private format(): string {
+    if (this.todos.length === 0) return "暂无任务";
+
+    const lines = this.todos.map((t, i) => {
+      const icon = t.status === "completed" ? "✓" : t.status === "in_progress" ? "▶" : "○";
+      return `${i + 1}. [${icon}] ${t.content}`;
+    });
+
+    const pending = this.todos.filter(t => t.status === "pending").length;
+    const inProgress = this.todos.filter(t => t.status === "in_progress").length;
+    const completed = this.todos.filter(t => t.status === "completed").length;
+
+    return lines.join("\n") + `\n\n总计: ${this.todos.length} | 待办: ${pending} | 进行中: ${inProgress} | 完成: ${completed}`;
+  }
+
+  getCurrent(): string {
+    return this.format();
+  }
+}
+
+const todoManager = new TodoManager();
+
+// ============================================================================
+// Claw 系统 - V5 新增 (知识外部化与渐进式加载)
+// ============================================================================
+
+interface Claw {
+  name: string;
+  description: string;
+  content: string;
+  path: string;
+}
+
+class ClawLoader {
+  private clawsDir: string;
+  private claws: Map<string, Claw> = new Map();
+
+  constructor() {
+    this.clawsDir = CLAW_DIR;
+    this.loadClaws();
+  }
+
+  // 解析 CLAW.md 文件 (YAML frontmatter + Markdown body)
+  private parseClawFile(filePath: string): Claw | null {
+    try {
+      const content = fs.readFileSync(filePath, "utf-8");
+
+      // 匹配 ---\nYAML\n---\nMarkdown 格式
+      const match = content.match(/^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/);
+      if (!match) return null;
+
+      const yamlContent = match[1];
+      const markdownContent = match[2].trim();
+
+      // 简单 YAML 解析 (只处理 name 和 description)
+      const name = yamlContent.match(/name:\s*(.+)/)?.[1]?.trim();
+      const description = yamlContent.match(/description:\s*(.+)/)?.[1]?.trim();
+
+      if (!name || !description) return null;
+
+      return {
+        name,
+        description,
+        content: markdownContent,
+        path: filePath
+      };
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // 加载所有 claw
+  private loadClaws() {
+    if (!fs.existsSync(this.clawsDir)) return;
+
+    const entries = fs.readdirSync(this.clawsDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        const clawPath = path.join(this.clawsDir, entry.name, "CLAW.md");
+        if (fs.existsSync(clawPath)) {
+          const claw = this.parseClawFile(clawPath);
+          if (claw) {
+            this.claws.set(claw.name, claw);
+          }
+        }
+      }
+    }
+  }
+
+  // 获取 claw 列表用于系统提示 (仅元数据)
+  getDescriptions(): string {
+    if (this.claws.size === 0) return "无可用技能";
+
+    const lines = Array.from(this.claws.values()).map(s =>
+      `- ${s.name}: ${s.description}`
+    );
+    return lines.join("\n");
+  }
+
+  // 获取 claw 数量
+  get count(): number {
+    return this.claws.size;
+  }
+
+  // 加载指定 claw 的完整内容 (作为 tool_result 注入)
+  loadClaw(name: string): string {
+    const claw = this.claws.get(name);
+    if (!claw) return `错误: 技能 '${name}' 不存在`;
+
+    return `<claw-loaded name="${name}">
+${claw.content}
+</claw-loaded>
+
+请按照上述技能文档的指引完成任务。`;
+  }
+
+  // 列出所有可用 claw 名称
+  listClaws(): string {
+    if (this.claws.size === 0) return "无可用技能";
+    return Array.from(this.claws.keys()).join(", ");
+  }
+}
+
+const clawLoader = new ClawLoader();
+
+// ============================================================================
+// V6 新增: 身份系统 - Workspace 初始化与人格加载
+// ============================================================================
+
+// 人格文件列表（从 .ID.sample 目录复制）
+const PERSONA_FILES = [
+  "AGENTS.md",
+  "SOUL.md",
+  "IDENTITY.md",
+  "USER.md",
+  "BOOTSTRAP.md",
+  "HEARTBEAT.md",
+  "TOOLS.md"
+];
+
+// 从 .ID.sample 目录加载模板内容
+function loadPersonaTemplate(filename: string): string {
+  const samplePath = path.join(ID_SAMPLE_DIR, filename);
+  if (fs.existsSync(samplePath)) {
+    return fs.readFileSync(samplePath, "utf-8");
+  }
+  // 如果 .ID.sample 不存在，返回最小模板
+  return `# ${filename}\n\n(模板文件缺失，请检查 .ID.sample 目录)`;
+}
+
+class IdentitySystem {
+  private workspaceDir: string;
+  private identityCache: { name: string; soul: string; user: string; rules: string } | null = null;
+
+  constructor(workspaceDir: string) {
+    this.workspaceDir = workspaceDir;
+  }
+
+  // 初始化 Workspace（从 .ID.sample 复制缺失的人格文件）
+  initWorkspace(): string {
+    const created: string[] = [];
+    const existed: string[] = [];
+
+    // 确保 workspace 目录存在
+    if (!fs.existsSync(this.workspaceDir)) {
+      fs.mkdirSync(this.workspaceDir, { recursive: true });
+      created.push(path.basename(this.workspaceDir) + "/");
+    }
+
+    for (const filename of PERSONA_FILES) {
+      const filePath = path.join(this.workspaceDir, filename);
+      if (!fs.existsSync(filePath)) {
+        const content = loadPersonaTemplate(filename);
+        fs.writeFileSync(filePath, content, "utf-8");
+        created.push(filename);
+      } else {
+        existed.push(filename);
+      }
+    }
+
+    // 确保 memory 目录存在
+    const memoryDir = path.join(this.workspaceDir, "memory");
+    if (!fs.existsSync(memoryDir)) {
+      fs.mkdirSync(memoryDir, { recursive: true });
+      created.push("memory/");
+    }
+
+    if (created.length === 0) {
+      return `Workspace 已就绪 (${existed.length} 个人格文件)`;
+    }
+    return `Workspace 初始化:\n  创建: ${created.join(", ")}\n  已存在: ${existed.join(", ")}`;
+  }
+
+  // 加载身份信息
+  loadIdentity(): string {
+    const files = ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"];
+    const contents: Record<string, string> = {};
+
+    for (const file of files) {
+      const filePath = path.join(this.workspaceDir, file);
+      contents[file] = fs.existsSync(filePath)
+        ? fs.readFileSync(filePath, "utf-8")
+        : `(${file} 不存在)`;
+    }
+
+    // 提取名字 (支持 **名字** 和 **Name**，中英文冒号)
+    const nameMatch = contents["IDENTITY.md"].match(/\*\*(名字|Name)\*\*[：:]\s*(.+)/);
+    const rawName = nameMatch ? nameMatch[2].trim() : "";
+    // 过滤掉占位符文本
+    const name = (rawName && !rawName.startsWith("_（") && !rawName.startsWith("_("))
+      ? rawName
+      : "";
+
+    this.identityCache = {
+      name: name || "Assistant",
+      soul: contents["SOUL.md"],
+      user: contents["USER.md"],
+      rules: contents["AGENTS.md"]
+    };
+
+    // 检查是否需要首次引导：BOOTSTRAP.md 存在且名字未设置
+    const bootstrapPath = path.join(this.workspaceDir, "BOOTSTRAP.md");
+    const needsBootstrap = fs.existsSync(bootstrapPath) && !name;
+
+    return needsBootstrap
+      ? `🌟 首次运行！请与我对话完成身份设置。`
+      : `身份加载完成: ${this.identityCache.name}`;
+  }
+
+  // 获取增强的系统提示（注入身份信息）
+  getEnhancedSystemPrompt(basePrompt: string): string {
+    if (!this.identityCache) {
+      this.loadIdentity();
+    }
+
+    return `${basePrompt}
+
+# 你的身份
+${this.identityCache!.soul}
+
+# 用户信息  
+${this.identityCache!.user}
+
+# 行为规范
+${this.identityCache!.rules}`;
+  }
+
+  // 更新身份文件
+  updateIdentityFile(file: string, content: string): string {
+    const validFiles = ["IDENTITY.md", "SOUL.md", "USER.md", "HEARTBEAT.md", "TOOLS.md"];
+    if (!validFiles.includes(file)) {
+      return `错误: 只能更新 ${validFiles.join(", ")}`;
+    }
+    const filePath = path.join(this.workspaceDir, file);
+    fs.writeFileSync(filePath, content, "utf-8");
+    this.identityCache = null; // 清除缓存
+    return `已更新: ${file}`;
+  }
+
+  // 获取当前身份摘要
+  getIdentitySummary(): string {
+    if (!this.identityCache) {
+      this.loadIdentity();
+    }
+    return `名字: ${this.identityCache!.name}\n\n灵魂摘要:\n${this.identityCache!.soul.slice(0, 300)}...`;
+  }
+
+  // 获取名字
+  getName(): string {
+    if (!this.identityCache) {
+      this.loadIdentity();
+    }
+    return this.identityCache!.name;
+  }
+}
+
+const identitySystem = new IdentitySystem(IDENTITY_DIR);
+
+// ============================================================================
+// V7 新增: 分层记忆系统 - 日记本模式
+// ============================================================================
+
+class LayeredMemory {
+  private workspaceDir: string;
+  private memoryDir: string;
+
+  constructor(workspaceDir: string) {
+    this.workspaceDir = workspaceDir;
+    this.memoryDir = path.join(workspaceDir, "memory");
+    if (!fs.existsSync(this.memoryDir)) {
+      fs.mkdirSync(this.memoryDir, { recursive: true });
+    }
+  }
+
+  // 获取今天的日期字符串
+  private getToday(): string {
+    return new Date().toISOString().split("T")[0];
+  }
+
+  // 获取日记文件路径
+  private getDailyPath(date?: string): string {
+    return path.join(this.memoryDir, `${date || this.getToday()}.md`);
+  }
+
+  // 写入今日日记
+  writeDailyNote(content: string): string {
+    const today = this.getToday();
+    const filePath = this.getDailyPath(today);
+    const timestamp = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+    
+    let existing = fs.existsSync(filePath) 
+      ? fs.readFileSync(filePath, "utf-8")
+      : `# ${today} 日记\n`;
+    
+    fs.writeFileSync(filePath, existing + `\n## ${timestamp}\n\n${content}\n`, "utf-8");
+    return `已记录到 ${today} 日记`;
+  }
+
+  // 读取指定日期的日记
+  readDailyNote(date?: string): string {
+    const filePath = this.getDailyPath(date);
+    if (!fs.existsSync(filePath)) {
+      return date ? `${date} 没有日记` : "今天还没有日记";
+    }
+    return fs.readFileSync(filePath, "utf-8");
+  }
+
+  // 读取最近 N 天的日记
+  readRecentNotes(days: number = 3): string {
+    const notes: string[] = [];
+    const today = new Date();
+    
+    for (let i = 0; i < days; i++) {
+      const date = new Date(today);
+      date.setDate(date.getDate() - i);
+      const dateStr = date.toISOString().split("T")[0];
+      const filePath = this.getDailyPath(dateStr);
+      
+      if (fs.existsSync(filePath)) {
+        const content = fs.readFileSync(filePath, "utf-8");
+        notes.push(`--- ${dateStr} ---\n${content.slice(0, 1500)}${content.length > 1500 ? "..." : ""}`);
+      }
+    }
+    
+    return notes.length > 0 ? notes.join("\n\n") : "最近没有日记";
+  }
+
+  // 列出所有日记
+  listDailyNotes(): string {
+    const files = fs.readdirSync(this.memoryDir)
+      .filter(f => /^\d{4}-\d{2}-\d{2}\.md$/.test(f))
+      .sort()
+      .reverse();
+    
+    if (files.length === 0) return "暂无日记";
+    
+    return files.slice(0, 20).map(f => {
+      const date = f.replace(".md", "");
+      const stat = fs.statSync(path.join(this.memoryDir, f));
+      return `- ${date} (${Math.round(stat.size / 1024)}KB)`;
+    }).join("\n");
+  }
+
+  // 读取长期记忆 (MEMORY.md)
+  readLongTermMemory(): string {
+    const memoryPath = path.join(this.workspaceDir, "MEMORY.md");
+    if (!fs.existsSync(memoryPath)) {
+      return "长期记忆为空（MEMORY.md 不存在）";
+    }
+    return fs.readFileSync(memoryPath, "utf-8");
+  }
+
+  // 完整更新长期记忆
+  updateLongTermMemory(content: string): string {
+    const memoryPath = path.join(this.workspaceDir, "MEMORY.md");
+    fs.writeFileSync(memoryPath, content, "utf-8");
+    return "长期记忆已更新";
+  }
+
+  // 追加到长期记忆的某个分类
+  appendLongTermMemory(section: string, content: string): string {
+    const memoryPath = path.join(this.workspaceDir, "MEMORY.md");
+    let existing = fs.existsSync(memoryPath)
+      ? fs.readFileSync(memoryPath, "utf-8")
+      : "# MEMORY.md - 长期记忆\n";
+    
+    const sectionHeader = `## ${section}`;
+    if (existing.includes(sectionHeader)) {
+      // 在 section 末尾追加
+      const lines = existing.split("\n");
+      const sectionIndex = lines.findIndex(l => l.startsWith(sectionHeader));
+      let insertIndex = sectionIndex + 1;
+      while (insertIndex < lines.length && !lines[insertIndex].startsWith("## ")) {
+        insertIndex++;
+      }
+      lines.splice(insertIndex, 0, `- ${content}`);
+      existing = lines.join("\n");
+    } else {
+      existing += `\n\n${sectionHeader}\n\n- ${content}`;
+    }
+    
+    fs.writeFileSync(memoryPath, existing, "utf-8");
+    return `已添加到长期记忆 [${section}]`;
+  }
+
+  // 搜索所有记忆（日记 + 长期记忆）
+  searchAllMemory(query: string): string {
+    const results: string[] = [];
+    const lowerQuery = query.toLowerCase();
+    
+    // 搜索长期记忆
+    const longTermPath = path.join(this.workspaceDir, "MEMORY.md");
+    if (fs.existsSync(longTermPath)) {
+      const content = fs.readFileSync(longTermPath, "utf-8");
+      if (content.toLowerCase().includes(lowerQuery)) {
+        const lines = content.split("\n").filter(l => l.toLowerCase().includes(lowerQuery));
+        results.push(`[MEMORY.md] ${lines[0]?.slice(0, 100) || "找到匹配"}`);
+      }
+    }
+    
+    // 搜索最近30天日记
+    const files = fs.readdirSync(this.memoryDir)
+      .filter(f => /^\d{4}-\d{2}-\d{2}\.md$/.test(f))
+      .sort()
+      .reverse()
+      .slice(0, 30);
+    
+    for (const file of files) {
+      const content = fs.readFileSync(path.join(this.memoryDir, file), "utf-8");
+      if (content.toLowerCase().includes(lowerQuery)) {
+        const date = file.replace(".md", "");
+        const lines = content.split("\n").filter(l => l.toLowerCase().includes(lowerQuery));
+        results.push(`[${date}] ${lines[0]?.slice(0, 100) || "找到匹配"}`);
+      }
+    }
+    
+    return results.length > 0 ? results.slice(0, 10).join("\n") : "未找到相关记忆";
+  }
+
+  // 获取时间上下文
+  getTimeContext(): string {
+    const now = new Date();
+    const today = this.getToday();
+    const dayOfWeek = ["日", "一", "二", "三", "四", "五", "六"][now.getDay()];
+    const hour = now.getHours();
+    
+    let timeOfDay = "凌晨";
+    if (hour >= 6 && hour < 12) timeOfDay = "上午";
+    else if (hour >= 12 && hour < 14) timeOfDay = "中午";
+    else if (hour >= 14 && hour < 18) timeOfDay = "下午";
+    else if (hour >= 18 && hour < 22) timeOfDay = "晚上";
+    else if (hour >= 22) timeOfDay = "深夜";
+    
+    return `今天是 ${today} 星期${dayOfWeek}，现在是${timeOfDay} ${hour}:${String(now.getMinutes()).padStart(2, "0")}`;
+  }
+}
+
+const layeredMemory = new LayeredMemory(WORKDIR);
+
+// ============================================================================
+// V8 新增: Heartbeat 系统 - 主动性与周期检查
+// ============================================================================
+
+interface HeartbeatState {
+  lastChecks: Record<string, number>;
+  lastHeartbeat: number;
+}
+
+class HeartbeatSystem {
+  private workspaceDir: string;
+  private heartbeatFile: string;
+  private stateFile: string;
+  private state: HeartbeatState;
+
+  constructor(workspaceDir: string) {
+    this.workspaceDir = workspaceDir;
+    this.heartbeatFile = path.join(workspaceDir, "HEARTBEAT.md");
+    this.stateFile = path.join(workspaceDir, "memory", "heartbeat-state.json");
+    this.state = this.loadState();
+  }
+
+  private loadState(): HeartbeatState {
+    if (fs.existsSync(this.stateFile)) {
+      try {
+        return JSON.parse(fs.readFileSync(this.stateFile, "utf-8"));
+      } catch (e) { /* 文件损坏，重新创建 */ }
+    }
+    return { lastChecks: {}, lastHeartbeat: 0 };
+  }
+
+  private saveState() {
+    const dir = path.dirname(this.stateFile);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(this.stateFile, JSON.stringify(this.state, null, 2));
+  }
+
+  // 读取心跳清单
+  getChecklist(): string {
+    if (!fs.existsSync(this.heartbeatFile)) {
+      return "HEARTBEAT.md 不存在（这是正常的，可以创建一个来定义检查清单）";
+    }
+    return fs.readFileSync(this.heartbeatFile, "utf-8");
+  }
+
+  // 更新心跳清单
+  updateChecklist(content: string): string {
+    fs.writeFileSync(this.heartbeatFile, content, "utf-8");
+    return "HEARTBEAT.md 已更新";
+  }
+
+  // 记录检查时间
+  recordCheck(checkName: string): string {
+    this.state.lastChecks[checkName] = Date.now();
+    this.state.lastHeartbeat = Date.now();
+    this.saveState();
+    return `已记录检查: ${checkName}`;
+  }
+
+  // 获取检查状态
+  getStatus(): string {
+    const lines = [`上次心跳: ${this.state.lastHeartbeat ? new Date(this.state.lastHeartbeat).toLocaleString("zh-CN") : "从未"}`];
+    for (const [name, time] of Object.entries(this.state.lastChecks)) {
+      const ago = Math.floor((Date.now() - time) / 60000);
+      lines.push(`- ${name}: ${ago} 分钟前`);
+    }
+    return lines.join("\n");
+  }
+
+  // 判断是否应该打扰用户
+  shouldDisturb(): boolean {
+    const hour = new Date().getHours();
+    return !(hour >= 23 || hour < 8); // 深夜不打扰
+  }
+
+  // 判断是否需要检查某项
+  needsCheck(checkName: string, intervalMinutes: number = 30): boolean {
+    const lastTime = this.state.lastChecks[checkName] || 0;
+    return (Date.now() - lastTime) / 60000 >= intervalMinutes;
+  }
+
+  // 执行心跳
+  runHeartbeat(): string {
+    if (!this.shouldDisturb()) {
+      return "HEARTBEAT_OK (深夜静默)";
+    }
+    const checklist = this.getChecklist();
+    if (checklist.includes("不存在")) {
+      return "HEARTBEAT_OK (无检查清单)";
+    }
+    this.state.lastHeartbeat = Date.now();
+    this.saveState();
+    return `心跳触发，请检查 HEARTBEAT.md 中的事项。如果没有需要处理的，回复 HEARTBEAT_OK`;
+  }
+}
+
+const heartbeatSystem = new HeartbeatSystem(WORKDIR);
+
+// ============================================================================
+// V9 新增: Session 系统 - 多会话管理
+// ============================================================================
+
+type SessionType = "main" | "isolated";
+
+interface Session {
+  key: string;
+  type: SessionType;
+  history: Anthropic.MessageParam[];
+  createdAt: number;
+  lastActiveAt: number;
+  metadata: Record<string, any>;
+}
+
+class SessionManager {
+  private sessions: Map<string, Session> = new Map();
+  private sessionsDir: string;
+
+  constructor(workspaceDir: string) {
+    this.sessionsDir = path.join(workspaceDir, ".sessions");
+    if (!fs.existsSync(this.sessionsDir)) {
+      fs.mkdirSync(this.sessionsDir, { recursive: true });
+    }
+    this.loadSessions();
+  }
+
+  private loadSessions() {
+    const files = fs.readdirSync(this.sessionsDir).filter(f => f.endsWith(".json"));
+    for (const file of files) {
+      try {
+        const data = JSON.parse(fs.readFileSync(path.join(this.sessionsDir, file), "utf-8"));
+        this.sessions.set(data.key, data);
+      } catch (e) { /* 忽略损坏的会话文件 */ }
+    }
+  }
+
+  private saveSession(session: Session) {
+    const filePath = path.join(this.sessionsDir, `${session.key}.json`);
+    const toSave = { ...session, history: session.history.slice(-20) }; // 只保存最近20条
+    fs.writeFileSync(filePath, JSON.stringify(toSave, null, 2));
+  }
+
+  private generateKey(): string {
+    return `session_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  // 创建新会话
+  createSession(type: SessionType = "main", metadata: Record<string, any> = {}): Session {
+    const session: Session = {
+      key: this.generateKey(),
+      type,
+      history: [],
+      createdAt: Date.now(),
+      lastActiveAt: Date.now(),
+      metadata
+    };
+    this.sessions.set(session.key, session);
+    this.saveSession(session);
+    return session;
+  }
+
+  // 获取会话
+  getSession(key: string): Session | undefined {
+    const session = this.sessions.get(key);
+    if (session) session.lastActiveAt = Date.now();
+    return session;
+  }
+
+  // 获取或创建会话
+  getOrCreateSession(key?: string, type: SessionType = "main"): Session {
+    if (key) {
+      const existing = this.getSession(key);
+      if (existing) return existing;
+    }
+    return this.createSession(type);
+  }
+
+  // 更新会话历史
+  updateHistory(key: string, history: Anthropic.MessageParam[]) {
+    const session = this.sessions.get(key);
+    if (session) {
+      session.history = history;
+      session.lastActiveAt = Date.now();
+      this.saveSession(session);
+    }
+  }
+
+  // 列出所有会话
+  listSessions(): string {
+    const sessions = Array.from(this.sessions.values())
+      .sort((a, b) => b.lastActiveAt - a.lastActiveAt);
+    if (sessions.length === 0) return "暂无会话";
+    return sessions.slice(0, 10).map(s => {
+      const ago = Math.floor((Date.now() - s.lastActiveAt) / 60000);
+      return `- ${s.key} [${s.type}] (${ago}分钟前, ${s.history.length}条消息)`;
+    }).join("\n");
+  }
+
+  // 删除会话
+  deleteSession(key: string): string {
+    if (!this.sessions.has(key)) return `会话 ${key} 不存在`;
+    this.sessions.delete(key);
+    const filePath = path.join(this.sessionsDir, `${key}.json`);
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    return `已删除会话 ${key}`;
+  }
+
+  // 清理过期会话（超过 7 天）
+  cleanupSessions(): string {
+    const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    let cleaned = 0;
+    for (const [key, session] of this.sessions) {
+      if (session.lastActiveAt < cutoff) {
+        this.deleteSession(key);
+        cleaned++;
+      }
+    }
+    return `已清理 ${cleaned} 个过期会话`;
+  }
+
+  // 判断是否是主会话
+  isMainSession(key: string): boolean {
+    return this.sessions.get(key)?.type === "main";
+  }
+}
+
+const sessionManager = new SessionManager(WORKDIR);
+
+// ============================================================================
+// V10 新增: Introspection 系统 - 自我观察与反思
+// ============================================================================
+
+interface BehaviorLog {
+  timestamp: number;
+  tool: string;
+  args: Record<string, any>;
+  result: string;
+  duration: number;
+  context?: string;
+}
+
+interface IntrospectionStats {
+  totalCalls: number;
+  toolUsage: Record<string, number>;
+  avgDuration: number;
+  patterns: string[];
+  lastReflection: number;
+}
+
+class IntrospectionSystem {
+  private workspaceDir: string;
+  private logsDir: string;
+  private statsFile: string;
+  private currentSessionLogs: BehaviorLog[] = [];
+  private stats: IntrospectionStats;
+
+  constructor(workspaceDir: string) {
+    this.workspaceDir = workspaceDir;
+    this.logsDir = path.join(workspaceDir, ".introspection");
+    this.statsFile = path.join(this.logsDir, "stats.json");
+    if (!fs.existsSync(this.logsDir)) {
+      fs.mkdirSync(this.logsDir, { recursive: true });
+    }
+    this.stats = this.loadStats();
+  }
+
+  private loadStats(): IntrospectionStats {
+    if (fs.existsSync(this.statsFile)) {
+      try {
+        return JSON.parse(fs.readFileSync(this.statsFile, "utf-8"));
+      } catch (e) { /* 文件损坏 */ }
+    }
+    return { totalCalls: 0, toolUsage: {}, avgDuration: 0, patterns: [], lastReflection: 0 };
+  }
+
+  private saveStats() {
+    fs.writeFileSync(this.statsFile, JSON.stringify(this.stats, null, 2));
+  }
+
+  // 记录工具调用
+  logToolCall(tool: string, args: Record<string, any>, result: string, duration: number, context?: string) {
+    const log: BehaviorLog = { timestamp: Date.now(), tool, args, result: result.slice(0, 500), duration, context };
+    this.currentSessionLogs.push(log);
+    
+    // 更新统计
+    this.stats.totalCalls++;
+    this.stats.toolUsage[tool] = (this.stats.toolUsage[tool] || 0) + 1;
+    this.stats.avgDuration = (this.stats.avgDuration * (this.stats.totalCalls - 1) + duration) / this.stats.totalCalls;
+    this.saveStats();
+
+    // 每 50 次调用保存一次日志
+    if (this.currentSessionLogs.length >= 50) {
+      this.persistLogs();
+    }
+  }
+
+  // 持久化当前会话日志
+  private persistLogs() {
+    if (this.currentSessionLogs.length === 0) return;
+    const filename = `behavior_${new Date().toISOString().split('T')[0]}.jsonl`;
+    const filepath = path.join(this.logsDir, filename);
+    const lines = this.currentSessionLogs.map(l => JSON.stringify(l)).join('\n') + '\n';
+    fs.appendFileSync(filepath, lines);
+    this.currentSessionLogs = [];
+  }
+
+  // 获取行为统计
+  getStats(): string {
+    const topTools = Object.entries(this.stats.toolUsage)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([tool, count]) => `  - ${tool}: ${count} 次`)
+      .join('\n');
+
+    return `## 行为统计
+
+总调用次数: ${this.stats.totalCalls}
+平均响应时间: ${Math.round(this.stats.avgDuration)}ms
+
+### 最常用工具
+${topTools || '  (暂无数据)'}
+
+### 识别的模式
+${this.stats.patterns.length > 0 ? this.stats.patterns.map(p => `  - ${p}`).join('\n') : '  (暂无模式)'}
+
+上次反思: ${this.stats.lastReflection ? new Date(this.stats.lastReflection).toLocaleString('zh-CN') : '从未'}`;
+  }
+
+  // 分析行为模式
+  analyzePatterns(): string {
+    const patterns: string[] = [];
+    const usage = this.stats.toolUsage;
+
+    // 模式1: 工具偏好
+    const totalCalls = this.stats.totalCalls;
+    for (const [tool, count] of Object.entries(usage)) {
+      const ratio = count / totalCalls;
+      if (ratio > 0.3) {
+        patterns.push(`高频使用 ${tool} (${Math.round(ratio * 100)}%)`);
+      }
+    }
+
+    // 模式2: 工具组合（从当前会话日志分析）
+    const toolSequences: Record<string, number> = {};
+    for (let i = 1; i < this.currentSessionLogs.length; i++) {
+      const seq = `${this.currentSessionLogs[i-1].tool} -> ${this.currentSessionLogs[i].tool}`;
+      toolSequences[seq] = (toolSequences[seq] || 0) + 1;
+    }
+    const commonSeqs = Object.entries(toolSequences)
+      .filter(([_, count]) => count >= 3)
+      .map(([seq, count]) => `${seq} (${count}次)`);
+    if (commonSeqs.length > 0) {
+      patterns.push(`常见工具链: ${commonSeqs.join(', ')}`);
+    }
+
+    // 模式3: 时间分布
+    const hours = this.currentSessionLogs.map(l => new Date(l.timestamp).getHours());
+    const hourCounts: Record<number, number> = {};
+    hours.forEach(h => hourCounts[h] = (hourCounts[h] || 0) + 1);
+    const peakHour = Object.entries(hourCounts).sort((a, b) => b[1] - a[1])[0];
+    if (peakHour) {
+      patterns.push(`活跃高峰: ${peakHour[0]}:00`);
+    }
+
+    this.stats.patterns = patterns;
+    this.saveStats();
+
+    return patterns.length > 0 
+      ? `识别到的行为模式:\n${patterns.map(p => `- ${p}`).join('\n')}`
+      : '暂未识别到明显的行为模式（需要更多数据）';
+  }
+
+  // 生成自我反思报告
+  generateReflection(): string {
+    this.persistLogs(); // 先保存当前日志
+    this.stats.lastReflection = Date.now();
+    this.saveStats();
+
+    const patterns = this.analyzePatterns();
+    const stats = this.getStats();
+
+    // 读取最近的行为日志
+    const files = fs.readdirSync(this.logsDir)
+      .filter(f => f.startsWith('behavior_'))
+      .sort()
+      .reverse()
+      .slice(0, 3);
+
+    let recentBehaviors = '';
+    for (const file of files) {
+      const content = fs.readFileSync(path.join(this.logsDir, file), 'utf-8');
+      const logs = content.trim().split('\n').slice(-10).map(l => {
+        try {
+          const log = JSON.parse(l);
+          return `  [${new Date(log.timestamp).toLocaleTimeString('zh-CN')}] ${log.tool}: ${log.result.slice(0, 50)}...`;
+        } catch { return ''; }
+      }).filter(Boolean);
+      if (logs.length > 0) {
+        recentBehaviors += `\n### ${file.replace('behavior_', '').replace('.jsonl', '')}\n${logs.join('\n')}`;
+      }
+    }
+
+    return `# 自我反思报告
+生成时间: ${new Date().toLocaleString('zh-CN')}
+
+${stats}
+
+## 行为模式分析
+${patterns}
+
+## 最近行为摘要
+${recentBehaviors || '(暂无记录)'}
+
+## 改进建议
+基于以上分析，以下是可能的改进方向：
+1. 检查高频工具是否有更高效的替代方案
+2. 分析工具链是否可以简化
+3. 考虑是否需要新的工具来填补能力空白
+
+---
+*这是一份自动生成的内省报告。定期反思有助于持续改进。*`;
+  }
+
+  // 获取当前会话的行为日志
+  getCurrentLogs(): string {
+    if (this.currentSessionLogs.length === 0) {
+      return '当前会话暂无行为记录';
+    }
+    return this.currentSessionLogs.slice(-20).map(l => 
+      `[${new Date(l.timestamp).toLocaleTimeString('zh-CN')}] ${l.tool}(${JSON.stringify(l.args).slice(0, 50)}...) -> ${l.result.slice(0, 100)}...`
+    ).join('\n');
+  }
+}
+
+const introspectionSystem = new IntrospectionSystem(WORKDIR);
+
+// ============================================================================
+// Channel 系统 - V11 新增 (多渠道接入)
+// ============================================================================
+
+// 渠道能力定义
+interface ChannelCapabilities {
+  chatTypes: ('direct' | 'group' | 'channel')[];
+  reactions?: boolean;
+  polls?: boolean;
+  media?: boolean;
+  threads?: boolean;
+  commands?: boolean;
+  markdown?: boolean;
+}
+
+// 消息上下文
+interface MessageContext {
+  channel: string;           // 来源渠道 ID
+  chatType: 'direct' | 'group' | 'channel';
+  chatId: string;
+  userId: string;
+  userName?: string;
+  messageId: string;
+  text: string;
+  replyTo?: string;
+  timestamp: number;
+}
+
+// 用户信任等级
+type TrustLevel = 'owner' | 'trusted' | 'normal' | 'restricted';
+
+// 渠道用户
+interface ChannelUser {
+  channelId: string;
+  userId: string;
+  userName?: string;
+  trustLevel: TrustLevel;
+}
+
+// 渠道接口 - 所有渠道必须实现
+interface Channel {
+  id: string;
+  name: string;
+  capabilities: ChannelCapabilities;
+  
+  // 生命周期
+  start(): Promise<void>;
+  stop(): Promise<void>;
+  isRunning(): boolean;
+  
+  // 消息处理
+  send(target: string, message: string): Promise<void>;
+  onMessage(handler: (ctx: MessageContext) => Promise<void>): void;
+  
+  // 用户管理
+  getTrustLevel(userId: string): TrustLevel;
+  setTrustLevel(userId: string, level: TrustLevel): void;
+}
+
+// 渠道配置
+interface ChannelConfig {
+  enabled: boolean;
+  token?: string;
+  allowFrom?: string[];
+  groupPolicy?: 'all' | 'mention-only' | 'disabled';
+  dmPolicy?: 'all' | 'allowlist' | 'disabled';
+  trustedUsers?: string[];
+}
+
+// 渠道管理器
+class ChannelManager {
+  private channels: Map<string, Channel> = new Map();
+  private configs: Map<string, ChannelConfig> = new Map();
+  private messageHandler?: (ctx: MessageContext) => Promise<void>;
+  private configFile: string;
+
+  constructor(workspaceDir: string) {
+    this.configFile = path.join(workspaceDir, '.channels.json');
+    this.loadConfigs();
+  }
+
+  private loadConfigs() {
+    if (fs.existsSync(this.configFile)) {
+      try {
+        const data = JSON.parse(fs.readFileSync(this.configFile, 'utf-8'));
+        for (const [id, config] of Object.entries(data)) {
+          this.configs.set(id, config as ChannelConfig);
+        }
+      } catch (e) {
+        console.log('\x1b[33m警告: 渠道配置文件损坏\x1b[0m');
+      }
+    }
+  }
+
+  private saveConfigs() {
+    const data: Record<string, ChannelConfig> = {};
+    for (const [id, config] of this.configs) {
+      data[id] = config;
+    }
+    fs.writeFileSync(this.configFile, JSON.stringify(data, null, 2));
+  }
+
+  // 注册渠道
+  register(channel: Channel): void {
+    this.channels.set(channel.id, channel);
+    if (!this.configs.has(channel.id)) {
+      this.configs.set(channel.id, { enabled: false });
+      this.saveConfigs();
+    }
+    
+    // 绑定消息处理器
+    channel.onMessage(async (ctx) => {
+      if (this.messageHandler) {
+        await this.messageHandler(ctx);
+      }
+    });
+    
+    console.log(`\x1b[36m[Channel] 注册: ${channel.name} (${channel.id})\x1b[0m`);
+  }
+
+  // 注销渠道
+  unregister(channelId: string): void {
+    const channel = this.channels.get(channelId);
+    if (channel) {
+      channel.stop();
+      this.channels.delete(channelId);
+      console.log(`\x1b[36m[Channel] 注销: ${channelId}\x1b[0m`);
+    }
+  }
+
+  // 启动所有已启用的渠道
+  async startAll(): Promise<string> {
+    const results: string[] = [];
+    for (const [id, channel] of this.channels) {
+      const config = this.configs.get(id);
+      if (config?.enabled) {
+        try {
+          await channel.start();
+          results.push(`✓ ${channel.name}`);
+        } catch (e: any) {
+          results.push(`✗ ${channel.name}: ${e.message}`);
+        }
+      }
+    }
+    return results.length > 0 ? results.join('\n') : '没有已启用的渠道';
+  }
+
+  // 停止所有渠道
+  async stopAll(): Promise<void> {
+    for (const channel of this.channels.values()) {
+      await channel.stop();
+    }
+  }
+
+  // 发送消息到指定渠道
+  async send(channelId: string, target: string, message: string): Promise<string> {
+    const channel = this.channels.get(channelId);
+    if (!channel) {
+      return `错误: 未知渠道 ${channelId}`;
+    }
+    if (!channel.isRunning()) {
+      return `错误: 渠道 ${channelId} 未运行`;
+    }
+    try {
+      await channel.send(target, message);
+      return `已发送到 ${channelId}:${target}`;
+    } catch (e: any) {
+      return `发送失败: ${e.message}`;
+    }
+  }
+
+  // 广播消息到所有运行中的渠道
+  async broadcast(message: string): Promise<string> {
+    const results: string[] = [];
+    for (const [id, channel] of this.channels) {
+      if (channel.isRunning()) {
+        try {
+          // 广播到默认目标（需要渠道配置）
+          const config = this.configs.get(id);
+          if (config?.allowFrom && config.allowFrom.length > 0) {
+            await channel.send(config.allowFrom[0], message);
+            results.push(`✓ ${id}`);
+          }
+        } catch (e: any) {
+          results.push(`✗ ${id}: ${e.message}`);
+        }
+      }
+    }
+    return results.length > 0 ? results.join('\n') : '没有可用的渠道';
+  }
+
+  // 设置消息处理器
+  onMessage(handler: (ctx: MessageContext) => Promise<void>): void {
+    this.messageHandler = handler;
+  }
+
+  // 列出所有渠道
+  list(): string {
+    if (this.channels.size === 0) {
+      return '暂无注册的渠道';
+    }
+    
+    const lines: string[] = ['## 已注册渠道\n'];
+    for (const [id, channel] of this.channels) {
+      const config = this.configs.get(id);
+      const status = channel.isRunning() ? '🟢 运行中' : config?.enabled ? '🟡 已启用' : '⚪ 未启用';
+      const caps = [];
+      if (channel.capabilities.reactions) caps.push('reactions');
+      if (channel.capabilities.polls) caps.push('polls');
+      if (channel.capabilities.media) caps.push('media');
+      if (channel.capabilities.threads) caps.push('threads');
+      
+      lines.push(`### ${channel.name} (${id})`);
+      lines.push(`状态: ${status}`);
+      lines.push(`类型: ${channel.capabilities.chatTypes.join(', ')}`);
+      if (caps.length > 0) lines.push(`能力: ${caps.join(', ')}`);
+      lines.push('');
+    }
+    return lines.join('\n');
+  }
+
+  // 获取渠道状态
+  status(channelId?: string): string {
+    if (channelId) {
+      const channel = this.channels.get(channelId);
+      if (!channel) return `未知渠道: ${channelId}`;
+      const config = this.configs.get(channelId);
+      return `渠道: ${channel.name}
+状态: ${channel.isRunning() ? '运行中' : '已停止'}
+启用: ${config?.enabled ? '是' : '否'}
+群组策略: ${config?.groupPolicy || 'all'}
+私聊策略: ${config?.dmPolicy || 'all'}
+信任用户: ${config?.trustedUsers?.join(', ') || '(无)'}`;
+    }
+    
+    // 总体状态
+    const running = Array.from(this.channels.values()).filter(c => c.isRunning()).length;
+    const enabled = Array.from(this.configs.values()).filter(c => c.enabled).length;
+    return `渠道总数: ${this.channels.size}
+已启用: ${enabled}
+运行中: ${running}`;
+  }
+
+  // 配置渠道
+  configure(channelId: string, updates: Partial<ChannelConfig>): string {
+    const config = this.configs.get(channelId) || { enabled: false };
+    Object.assign(config, updates);
+    this.configs.set(channelId, config);
+    this.saveConfigs();
+    return `已更新 ${channelId} 配置`;
+  }
+
+  // 获取渠道
+  get(channelId: string): Channel | undefined {
+    return this.channels.get(channelId);
+  }
+
+  // 获取配置
+  getConfig(channelId: string): ChannelConfig | undefined {
+    return this.configs.get(channelId);
+  }
+}
+
+// ============================================================================
+// 示例渠道实现: Console Channel (用于测试)
+// ============================================================================
+
+class ConsoleChannel implements Channel {
+  id = 'console';
+  name = 'Console (测试)';
+  capabilities: ChannelCapabilities = {
+    chatTypes: ['direct'],
+    markdown: true
+  };
+  
+  private running = false;
+  private handler?: (ctx: MessageContext) => Promise<void>;
+  private trustLevels: Map<string, TrustLevel> = new Map();
+
+  async start(): Promise<void> {
+    this.running = true;
+    console.log('\x1b[32m[Console] 渠道已启动\x1b[0m');
+  }
+
+  async stop(): Promise<void> {
+    this.running = false;
+    console.log('\x1b[33m[Console] 渠道已停止\x1b[0m');
+  }
+
+  isRunning(): boolean {
+    return this.running;
+  }
+
+  async send(target: string, message: string): Promise<void> {
+    console.log(`\x1b[35m[Console -> ${target}]\x1b[0m ${message}`);
+  }
+
+  onMessage(handler: (ctx: MessageContext) => Promise<void>): void {
+    this.handler = handler;
+  }
+
+  // 模拟接收消息（用于测试）
+  async simulateMessage(userId: string, text: string): Promise<void> {
+    if (this.handler) {
+      await this.handler({
+        channel: this.id,
+        chatType: 'direct',
+        chatId: userId,
+        userId,
+        messageId: `msg_${Date.now()}`,
+        text,
+        timestamp: Date.now()
+      });
+    }
+  }
+
+  getTrustLevel(userId: string): TrustLevel {
+    return this.trustLevels.get(userId) || 'normal';
+  }
+
+  setTrustLevel(userId: string, level: TrustLevel): void {
+    this.trustLevels.set(userId, level);
+  }
+}
+
+// ============================================================================
+// 示例渠道实现: Telegram Channel (骨架)
+// ============================================================================
+
+class TelegramChannel implements Channel {
+  id = 'telegram';
+  name = 'Telegram';
+  capabilities: ChannelCapabilities = {
+    chatTypes: ['direct', 'group', 'channel'],
+    reactions: true,
+    polls: true,
+    media: true,
+    commands: true,
+    markdown: true
+  };
+  
+  private running = false;
+  private handler?: (ctx: MessageContext) => Promise<void>;
+  private trustLevels: Map<string, TrustLevel> = new Map();
+  private token?: string;
+
+  constructor(token?: string) {
+    this.token = token || process.env.TELEGRAM_BOT_TOKEN;
+  }
+
+  async start(): Promise<void> {
+    if (!this.token) {
+      throw new Error('未配置 TELEGRAM_BOT_TOKEN');
+    }
+    this.running = true;
+    console.log('\x1b[32m[Telegram] 渠道已启动 (骨架模式)\x1b[0m');
+    // TODO: 实际实现需要使用 grammy 或 telegraf 库
+    // const bot = new Bot(this.token);
+    // bot.on('message', async (ctx) => { ... });
+    // await bot.start();
+  }
+
+  async stop(): Promise<void> {
+    this.running = false;
+    console.log('\x1b[33m[Telegram] 渠道已停止\x1b[0m');
+  }
+
+  isRunning(): boolean {
+    return this.running;
+  }
+
+  async send(target: string, message: string): Promise<void> {
+    if (!this.running) throw new Error('渠道未运行');
+    // TODO: 实际发送消息
+    console.log(`\x1b[35m[Telegram -> ${target}]\x1b[0m ${message.slice(0, 100)}...`);
+  }
+
+  onMessage(handler: (ctx: MessageContext) => Promise<void>): void {
+    this.handler = handler;
+  }
+
+  getTrustLevel(userId: string): TrustLevel {
+    return this.trustLevels.get(userId) || 'normal';
+  }
+
+  setTrustLevel(userId: string, level: TrustLevel): void {
+    this.trustLevels.set(userId, level);
+  }
+}
+
+// ============================================================================
+// 示例渠道实现: Discord Channel (骨架)
+// ============================================================================
+
+class DiscordChannel implements Channel {
+  id = 'discord';
+  name = 'Discord';
+  capabilities: ChannelCapabilities = {
+    chatTypes: ['direct', 'group', 'channel'],
+    reactions: true,
+    threads: true,
+    media: true,
+    commands: true,
+    markdown: true
+  };
+  
+  private running = false;
+  private handler?: (ctx: MessageContext) => Promise<void>;
+  private trustLevels: Map<string, TrustLevel> = new Map();
+  private token?: string;
+
+  constructor(token?: string) {
+    this.token = token || process.env.DISCORD_BOT_TOKEN;
+  }
+
+  async start(): Promise<void> {
+    if (!this.token) {
+      throw new Error('未配置 DISCORD_BOT_TOKEN');
+    }
+    this.running = true;
+    console.log('\x1b[32m[Discord] 渠道已启动 (骨架模式)\x1b[0m');
+    // TODO: 实际实现需要使用 discord.js 库
+  }
+
+  async stop(): Promise<void> {
+    this.running = false;
+    console.log('\x1b[33m[Discord] 渠道已停止\x1b[0m');
+  }
+
+  isRunning(): boolean {
+    return this.running;
+  }
+
+  async send(target: string, message: string): Promise<void> {
+    if (!this.running) throw new Error('渠道未运行');
+    console.log(`\x1b[35m[Discord -> ${target}]\x1b[0m ${message.slice(0, 100)}...`);
+  }
+
+  onMessage(handler: (ctx: MessageContext) => Promise<void>): void {
+    this.handler = handler;
+  }
+
+  getTrustLevel(userId: string): TrustLevel {
+    return this.trustLevels.get(userId) || 'normal';
+  }
+
+  setTrustLevel(userId: string, level: TrustLevel): void {
+    this.trustLevels.set(userId, level);
+  }
+}
+
+// 初始化渠道管理器
+const channelManager = new ChannelManager(WORKDIR);
+
+// 注册内置渠道
+channelManager.register(new ConsoleChannel());
+channelManager.register(new TelegramChannel());
+channelManager.register(new DiscordChannel());
+
+// ============================================================================
+// Security 系统 - V12 新增 (安全策略与审计)
+// ============================================================================
+
+// 工具风险等级
+type ToolRiskLevel = 'safe' | 'confirm' | 'dangerous';
+
+// 审计日志条目
+interface AuditLogEntry {
+  timestamp: number;
+  tool: string;
+  args: Record<string, any>;
+  riskLevel: ToolRiskLevel;
+  userId?: string;
+  channel?: string;
+  chatType?: 'direct' | 'group';
+  decision: 'allowed' | 'denied' | 'confirmed';
+  reason?: string;
+}
+
+// 安全上下文
+interface SecurityContext {
+  userId?: string;
+  channel?: string;
+  chatType?: 'direct' | 'group';
+  trustLevel: TrustLevel;
+}
+
+// 安全策略配置
+interface SecurityPolicy {
+  // 工具风险分类
+  toolRiskLevels: Record<string, ToolRiskLevel>;
+  // 信任等级对应的允许风险
+  trustAllowedRisk: Record<TrustLevel, ToolRiskLevel[]>;
+  // 群聊中禁用的工具
+  groupDenyList: string[];
+  // 敏感数据模式
+  sensitivePatterns: RegExp[];
+  // 是否启用审计
+  auditEnabled: boolean;
+  // 是否需要确认危险操作
+  confirmDangerous: boolean;
+}
+
+// 默认安全策略
+const DEFAULT_SECURITY_POLICY: SecurityPolicy = {
+  toolRiskLevels: {
+    // Safe: 只读操作
+    'read_file': 'safe',
+    'grep': 'safe',
+    'memory_search': 'safe',
+    'memory_get': 'safe',
+    'memory_stats': 'safe',
+    'identity_get': 'safe',
+    'daily_read': 'safe',
+    'daily_recent': 'safe',
+    'daily_list': 'safe',
+    'longterm_read': 'safe',
+    'time_context': 'safe',
+    'heartbeat_get': 'safe',
+    'heartbeat_status': 'safe',
+    'session_list': 'safe',
+    'introspect_stats': 'safe',
+    'introspect_patterns': 'safe',
+    'introspect_logs': 'safe',
+    'channel_list': 'safe',
+    'channel_status': 'safe',
+    'security_audit': 'safe',
+    'security_policy': 'safe',
+    
+    // Confirm: 写操作
+    'write_file': 'confirm',
+    'edit_file': 'confirm',
+    'memory_append': 'confirm',
+    'memory_ingest': 'confirm',
+    'identity_update': 'confirm',
+    'daily_write': 'confirm',
+    'longterm_update': 'confirm',
+    'longterm_append': 'confirm',
+    'heartbeat_update': 'confirm',
+    'heartbeat_record': 'confirm',
+    'session_create': 'confirm',
+    'session_delete': 'confirm',
+    'channel_send': 'confirm',
+    'channel_config': 'confirm',
+    'channel_start': 'confirm',
+    'channel_stop': 'confirm',
+    'TodoWrite': 'confirm',
+    'Claw': 'confirm',
+    'subagent': 'confirm',
+    
+    // Dangerous: 系统操作
+    'bash': 'dangerous',
+    'identity_init': 'dangerous',
+    'session_cleanup': 'dangerous',
+    'heartbeat_run': 'dangerous',
+    'introspect_reflect': 'dangerous',
+  },
+  
+  trustAllowedRisk: {
+    'owner': ['safe', 'confirm', 'dangerous'],
+    'trusted': ['safe', 'confirm'],
+    'normal': ['safe'],
+    'restricted': [],
+  },
+  
+  groupDenyList: [
+    'bash',
+    'write_file',
+    'edit_file',
+    'identity_update',
+    'identity_init',
+    'session_cleanup',
+    'longterm_update',
+  ],
+  
+  sensitivePatterns: [
+    /api[_-]?key/i,
+    /password/i,
+    /secret/i,
+    /token/i,
+    /private[_-]?key/i,
+    /credential/i,
+    /\b[A-Za-z0-9+/]{40,}\b/,  // Base64 长字符串
+    /sk-[a-zA-Z0-9]{20,}/,     // OpenAI API key
+    /ghp_[a-zA-Z0-9]{36}/,     // GitHub token
+  ],
+  
+  auditEnabled: true,
+  confirmDangerous: true,
+};
+
+// 安全系统
+class SecuritySystem {
+  private workspaceDir: string;
+  private auditDir: string;
+  private policyFile: string;
+  private policy: SecurityPolicy;
+  private currentContext: SecurityContext = { trustLevel: 'normal' };
+  private pendingConfirmations: Map<string, { tool: string; args: Record<string, any>; resolve: (confirmed: boolean) => void }> = new Map();
+
+  constructor(workspaceDir: string) {
+    this.workspaceDir = workspaceDir;
+    this.auditDir = path.join(workspaceDir, '.security', 'audit');
+    this.policyFile = path.join(workspaceDir, '.security', 'policy.json');
+    
+    if (!fs.existsSync(this.auditDir)) {
+      fs.mkdirSync(this.auditDir, { recursive: true });
+    }
+    
+    this.policy = this.loadPolicy();
+  }
+
+  private loadPolicy(): SecurityPolicy {
+    if (fs.existsSync(this.policyFile)) {
+      try {
+        const saved = JSON.parse(fs.readFileSync(this.policyFile, 'utf-8'));
+        // 合并默认策略和保存的策略
+        return {
+          ...DEFAULT_SECURITY_POLICY,
+          ...saved,
+          toolRiskLevels: { ...DEFAULT_SECURITY_POLICY.toolRiskLevels, ...saved.toolRiskLevels },
+          trustAllowedRisk: { ...DEFAULT_SECURITY_POLICY.trustAllowedRisk, ...saved.trustAllowedRisk },
+        };
+      } catch (e) {
+        console.log('\x1b[33m警告: 安全策略文件损坏，使用默认策略\x1b[0m');
+      }
+    }
+    return { ...DEFAULT_SECURITY_POLICY };
+  }
+
+  private savePolicy() {
+    const dir = path.dirname(this.policyFile);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.writeFileSync(this.policyFile, JSON.stringify(this.policy, null, 2));
+  }
+
+  // 设置当前安全上下文
+  setContext(ctx: Partial<SecurityContext>) {
+    this.currentContext = { ...this.currentContext, ...ctx };
+  }
+
+  // 获取工具风险等级
+  getToolRiskLevel(tool: string): ToolRiskLevel {
+    return this.policy.toolRiskLevels[tool] || 'confirm';
+  }
+
+  // 检查操作是否允许
+  checkPermission(tool: string, args: Record<string, any>): { allowed: boolean; reason?: string; needsConfirm?: boolean } {
+    const riskLevel = this.getToolRiskLevel(tool);
+    const { trustLevel, chatType, channel } = this.currentContext;
+    
+    // 检查信任等级
+    const allowedRisks = this.policy.trustAllowedRisk[trustLevel];
+    if (!allowedRisks.includes(riskLevel)) {
+      return { 
+        allowed: false, 
+        reason: `信任等级 ${trustLevel} 不允许执行 ${riskLevel} 级别的操作` 
+      };
+    }
+    
+    // 检查群聊限制
+    if (chatType === 'group' && this.policy.groupDenyList.includes(tool)) {
+      return { 
+        allowed: false, 
+        reason: `工具 ${tool} 在群聊中被禁用` 
+      };
+    }
+    
+    // 检查是否需要确认
+    if (riskLevel === 'dangerous' && this.policy.confirmDangerous) {
+      return { 
+        allowed: true, 
+        needsConfirm: true,
+        reason: `危险操作需要确认` 
+      };
+    }
+    
+    return { allowed: true };
+  }
+
+  // 记录审计日志
+  logAudit(entry: Omit<AuditLogEntry, 'timestamp'>) {
+    if (!this.policy.auditEnabled) return;
+    
+    const fullEntry: AuditLogEntry = {
+      ...entry,
+      timestamp: Date.now(),
+      userId: this.currentContext.userId,
+      channel: this.currentContext.channel,
+      chatType: this.currentContext.chatType,
+    };
+    
+    // 写入日志文件
+    const date = new Date().toISOString().split('T')[0];
+    const logFile = path.join(this.auditDir, `audit_${date}.jsonl`);
+    fs.appendFileSync(logFile, JSON.stringify(fullEntry) + '\n');
+  }
+
+  // 遮蔽敏感信息
+  maskSensitive(text: string): string {
+    let masked = text;
+    for (const pattern of this.policy.sensitivePatterns) {
+      masked = masked.replace(pattern, '[REDACTED]');
+    }
+    return masked;
+  }
+
+  // 检查文本是否包含敏感信息
+  containsSensitive(text: string): boolean {
+    return this.policy.sensitivePatterns.some(p => p.test(text));
+  }
+
+  // 获取审计日志
+  getAuditLogs(days: number = 7, limit: number = 100): string {
+    const logs: AuditLogEntry[] = [];
+    const files = fs.readdirSync(this.auditDir)
+      .filter(f => f.startsWith('audit_'))
+      .sort()
+      .reverse()
+      .slice(0, days);
+    
+    for (const file of files) {
+      const content = fs.readFileSync(path.join(this.auditDir, file), 'utf-8');
+      const entries = content.trim().split('\n')
+        .filter(Boolean)
+        .map(line => {
+          try { return JSON.parse(line); } catch { return null; }
+        })
+        .filter(Boolean);
+      logs.push(...entries);
+      if (logs.length >= limit) break;
+    }
+    
+    if (logs.length === 0) {
+      return '暂无审计日志';
+    }
+    
+    const lines = logs.slice(0, limit).map(log => {
+      const time = new Date(log.timestamp).toLocaleString('zh-CN');
+      const icon = log.decision === 'allowed' ? '✓' : log.decision === 'denied' ? '✗' : '?';
+      return `[${time}] ${icon} ${log.tool} (${log.riskLevel}) - ${log.decision}${log.reason ? `: ${log.reason}` : ''}`;
+    });
+    
+    return `## 审计日志 (最近 ${logs.length} 条)\n\n${lines.join('\n')}`;
+  }
+
+  // 获取安全策略摘要
+  getPolicySummary(): string {
+    const riskCounts = { safe: 0, confirm: 0, dangerous: 0 };
+    for (const level of Object.values(this.policy.toolRiskLevels)) {
+      riskCounts[level]++;
+    }
+    
+    return `## 安全策略摘要
+
+### 工具风险分布
+- 🟢 Safe: ${riskCounts.safe} 个
+- 🟡 Confirm: ${riskCounts.confirm} 个
+- 🔴 Dangerous: ${riskCounts.dangerous} 个
+
+### 信任等级权限
+- owner: ${this.policy.trustAllowedRisk.owner.join(', ')}
+- trusted: ${this.policy.trustAllowedRisk.trusted.join(', ')}
+- normal: ${this.policy.trustAllowedRisk.normal.join(', ')}
+- restricted: ${this.policy.trustAllowedRisk.restricted.join(', ')}
+
+### 群聊禁用工具
+${this.policy.groupDenyList.map(t => `- ${t}`).join('\n')}
+
+### 审计状态
+- 审计日志: ${this.policy.auditEnabled ? '已启用' : '已禁用'}
+- 危险操作确认: ${this.policy.confirmDangerous ? '已启用' : '已禁用'}`;
+  }
+
+  // 更新策略
+  updatePolicy(updates: Partial<SecurityPolicy>): string {
+    this.policy = { ...this.policy, ...updates };
+    this.savePolicy();
+    return '安全策略已更新';
+  }
+
+  // 设置工具风险等级
+  setToolRiskLevel(tool: string, level: ToolRiskLevel): string {
+    this.policy.toolRiskLevels[tool] = level;
+    this.savePolicy();
+    return `已将 ${tool} 的风险等级设置为 ${level}`;
+  }
+}
+
+// 初始化安全系统
+const securitySystem = new SecuritySystem(WORKDIR);
+
+// ============================================================================
+// V13: 自进化系统 - 从数据中学习，持续优化
+// ============================================================================
+
+interface ToolCallPattern {
+  sequence: string[];
+  frequency: number;
+  avgDuration: number;
+  successRate: number;
+  context?: string;
+}
+
+interface BehaviorStats {
+  totalCalls: number;
+  uniqueTools: number;
+  avgCallsPerSession: number;
+  topPatterns: ToolCallPattern[];
+  inefficientPatterns: ToolCallPattern[];
+  errorPatterns: ToolCallPattern[];
+}
+
+interface PolicySuggestion {
+  id: string;
+  type: 'risk_level' | 'trust_adjustment' | 'deny_list' | 'performance';
+  tool?: string;
+  currentValue: string;
+  suggestedValue: string;
+  confidence: number;
+  reason: string;
+  evidence: string[];
+  createdAt: number;
+  applied: boolean;
+}
+
+interface EvolutionHistory {
+  timestamp: number;
+  action: 'analyze' | 'suggest' | 'apply' | 'rollback';
+  details: string;
+  suggestionId?: string;
+}
+
+class EvolutionSystem {
+  private workspaceDir: string;
+  private evolutionDir: string;
+  private patternsFile: string;
+  private suggestionsFile: string;
+  private historyFile: string;
+  private patterns: ToolCallPattern[] = [];
+  private suggestions: PolicySuggestion[] = [];
+
+  constructor(workspaceDir: string) {
+    this.workspaceDir = workspaceDir;
+    this.evolutionDir = path.join(workspaceDir, '.evolution');
+    this.patternsFile = path.join(this.evolutionDir, 'patterns.json');
+    this.suggestionsFile = path.join(this.evolutionDir, 'suggestions.json');
+    this.historyFile = path.join(this.evolutionDir, 'history.jsonl');
+    
+    if (!fs.existsSync(this.evolutionDir)) {
+      fs.mkdirSync(this.evolutionDir, { recursive: true });
+    }
+    
+    this.loadState();
+  }
+
+  private loadState() {
+    if (fs.existsSync(this.patternsFile)) {
+      try {
+        this.patterns = JSON.parse(fs.readFileSync(this.patternsFile, 'utf-8'));
+      } catch (e) { /* ignore */ }
+    }
+    if (fs.existsSync(this.suggestionsFile)) {
+      try {
+        this.suggestions = JSON.parse(fs.readFileSync(this.suggestionsFile, 'utf-8'));
+      } catch (e) { /* ignore */ }
+    }
+  }
+
+  private saveState() {
+    fs.writeFileSync(this.patternsFile, JSON.stringify(this.patterns, null, 2));
+    fs.writeFileSync(this.suggestionsFile, JSON.stringify(this.suggestions, null, 2));
+  }
+
+  private logHistory(entry: Omit<EvolutionHistory, 'timestamp'>) {
+    const fullEntry = { ...entry, timestamp: Date.now() };
+    fs.appendFileSync(this.historyFile, JSON.stringify(fullEntry) + '\n');
+  }
+
+  // 分析行为模式
+  analyze(days: number = 7): string {
+    const introspectionDir = path.join(this.workspaceDir, '.introspection');
+    if (!fs.existsSync(introspectionDir)) {
+      return '无内省数据可分析';
+    }
+
+    // 读取内省日志
+    const toolCalls: Array<{ tool: string; duration: number; success: boolean; timestamp: number }> = [];
+    const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+    
+    const files = fs.readdirSync(introspectionDir).filter(f => f.endsWith('.jsonl'));
+    for (const file of files) {
+      const content = fs.readFileSync(path.join(introspectionDir, file), 'utf-8');
+      for (const line of content.split('\n').filter(l => l.trim())) {
+        try {
+          const entry = JSON.parse(line);
+          if (entry.timestamp >= cutoff && entry.tool) {
+            toolCalls.push({
+              tool: entry.tool,
+              duration: entry.duration || 0,
+              success: !entry.output?.includes('错误') && !entry.output?.includes('Error'),
+              timestamp: entry.timestamp
+            });
+          }
+        } catch (e) { /* ignore */ }
+      }
+    }
+
+    if (toolCalls.length === 0) {
+      return '分析期间无工具调用记录';
+    }
+
+    // 统计工具使用
+    const toolStats = new Map<string, { count: number; totalDuration: number; errors: number }>();
+    for (const call of toolCalls) {
+      const stat = toolStats.get(call.tool) || { count: 0, totalDuration: 0, errors: 0 };
+      stat.count++;
+      stat.totalDuration += call.duration;
+      if (!call.success) stat.errors++;
+      toolStats.set(call.tool, stat);
+    }
+
+    // 识别序列模式 (简化版: 连续3个工具)
+    const sequences = new Map<string, number>();
+    for (let i = 0; i < toolCalls.length - 2; i++) {
+      const seq = [toolCalls[i].tool, toolCalls[i+1].tool, toolCalls[i+2].tool].join(' -> ');
+      sequences.set(seq, (sequences.get(seq) || 0) + 1);
+    }
+
+    // 找出高频模式
+    const topPatterns = Array.from(sequences.entries())
+      .filter(([_, count]) => count >= 2)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([seq, freq]) => ({
+        sequence: seq.split(' -> '),
+        frequency: freq,
+        avgDuration: 0,
+        successRate: 1
+      }));
+
+    this.patterns = topPatterns;
+    this.saveState();
+
+    // 生成报告
+    const stats: BehaviorStats = {
+      totalCalls: toolCalls.length,
+      uniqueTools: toolStats.size,
+      avgCallsPerSession: toolCalls.length / Math.max(1, days),
+      topPatterns,
+      inefficientPatterns: [],
+      errorPatterns: []
+    };
+
+    // 识别低效模式 (重复调用同一工具)
+    for (let i = 0; i < toolCalls.length - 2; i++) {
+      if (toolCalls[i].tool === toolCalls[i+1].tool && toolCalls[i+1].tool === toolCalls[i+2].tool) {
+        stats.inefficientPatterns.push({
+          sequence: [toolCalls[i].tool, toolCalls[i].tool, toolCalls[i].tool],
+          frequency: 1,
+          avgDuration: 0,
+          successRate: 1,
+          context: '连续重复调用'
+        });
+      }
+    }
+
+    // 识别错误模式
+    for (const [tool, stat] of toolStats) {
+      if (stat.errors > 0 && stat.errors / stat.count > 0.3) {
+        stats.errorPatterns.push({
+          sequence: [tool],
+          frequency: stat.errors,
+          avgDuration: stat.totalDuration / stat.count,
+          successRate: 1 - stat.errors / stat.count,
+          context: `错误率 ${((stat.errors / stat.count) * 100).toFixed(1)}%`
+        });
+      }
+    }
+
+    this.logHistory({ action: 'analyze', details: `分析了 ${days} 天的数据，${toolCalls.length} 次调用` });
+
+    return `## 行为分析报告 (最近 ${days} 天)
+
+**总体统计**
+- 工具调用: ${stats.totalCalls} 次
+- 使用工具: ${stats.uniqueTools} 种
+- 日均调用: ${stats.avgCallsPerSession.toFixed(1)} 次
+
+**高频模式** (出现 ≥2 次)
+${stats.topPatterns.length > 0 
+  ? stats.topPatterns.map(p => `- ${p.sequence.join(' → ')} (${p.frequency}次)`).join('\n')
+  : '- 无明显模式'}
+
+**低效模式**
+${stats.inefficientPatterns.length > 0
+  ? stats.inefficientPatterns.map(p => `- ${p.sequence[0]} 连续调用 3+ 次`).join('\n')
+  : '- 无低效模式'}
+
+**错误模式**
+${stats.errorPatterns.length > 0
+  ? stats.errorPatterns.map(p => `- ${p.sequence[0]}: ${p.context}`).join('\n')
+  : '- 无高错误率工具'}`;
+  }
+
+  // 生成优化建议
+  suggest(focus?: 'security' | 'performance' | 'all'): string {
+    const newSuggestions: PolicySuggestion[] = [];
+    const focusArea = focus || 'all';
+
+    // 基于模式生成建议
+    if (focusArea === 'all' || focusArea === 'performance') {
+      // 检查是否有重复读取模式
+      for (const pattern of this.patterns) {
+        if (pattern.sequence[0] === pattern.sequence[1] && pattern.sequence[0] === 'read_file') {
+          newSuggestions.push({
+            id: `sug_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+            type: 'performance',
+            tool: 'read_file',
+            currentValue: '无缓存',
+            suggestedValue: '添加文件缓存',
+            confidence: 0.7,
+            reason: '检测到重复读取同一文件的模式',
+            evidence: [`模式: ${pattern.sequence.join(' → ')} 出现 ${pattern.frequency} 次`],
+            createdAt: Date.now(),
+            applied: false
+          });
+        }
+      }
+    }
+
+    if (focusArea === 'all' || focusArea === 'security') {
+      // 检查审计日志中的安全模式
+      const auditDir = path.join(this.workspaceDir, '.security', 'audit');
+      if (fs.existsSync(auditDir)) {
+        const auditFiles = fs.readdirSync(auditDir).filter(f => f.endsWith('.jsonl'));
+        let dangerousCount = 0;
+        let confirmedCount = 0;
+        
+        for (const file of auditFiles.slice(-7)) { // 最近7天
+          const content = fs.readFileSync(path.join(auditDir, file), 'utf-8');
+          for (const line of content.split('\n').filter(l => l.trim())) {
+            try {
+              const entry = JSON.parse(line);
+              if (entry.riskLevel === 'dangerous') dangerousCount++;
+              if (entry.decision === 'confirmed') confirmedCount++;
+            } catch (e) { /* ignore */ }
+          }
+        }
+
+        if (dangerousCount > 10 && confirmedCount === dangerousCount) {
+          newSuggestions.push({
+            id: `sug_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+            type: 'trust_adjustment',
+            currentValue: 'confirmDangerous: true',
+            suggestedValue: 'confirmDangerous: false',
+            confidence: 0.6,
+            reason: '所有危险操作都被确认，可考虑关闭确认提示',
+            evidence: [`${dangerousCount} 次危险操作全部被确认`],
+            createdAt: Date.now(),
+            applied: false
+          });
+        }
+      }
+    }
+
+    // 保存新建议
+    this.suggestions = [...this.suggestions.filter(s => !s.applied), ...newSuggestions];
+    this.saveState();
+
+    this.logHistory({ action: 'suggest', details: `生成了 ${newSuggestions.length} 条建议` });
+
+    if (this.suggestions.length === 0) {
+      return '当前无优化建议。系统运行良好！';
+    }
+
+    return `## 优化建议
+
+${this.suggestions.filter(s => !s.applied).map((s, i) => `
+### ${i + 1}. ${s.type === 'security' ? '🔒' : s.type === 'performance' ? '⚡' : '📋'} ${s.reason}
+- **ID**: ${s.id}
+- **当前**: ${s.currentValue}
+- **建议**: ${s.suggestedValue}
+- **置信度**: ${(s.confidence * 100).toFixed(0)}%
+- **证据**: ${s.evidence.join(', ')}
+`).join('\n')}
+
+使用 \`evolve_apply\` 应用建议。`;
+  }
+
+  // 应用建议
+  apply(suggestionId: string, confirm: boolean = false): string {
+    const suggestion = this.suggestions.find(s => s.id === suggestionId);
+    if (!suggestion) {
+      return `未找到建议: ${suggestionId}`;
+    }
+
+    if (suggestion.applied) {
+      return `建议 ${suggestionId} 已经应用过了`;
+    }
+
+    if (suggestion.confidence < 0.7 && !confirm) {
+      return `建议置信度较低 (${(suggestion.confidence * 100).toFixed(0)}%)，请使用 confirm: true 确认应用`;
+    }
+
+    // 应用建议 (这里是模拟，实际应该修改对应的配置)
+    suggestion.applied = true;
+    this.saveState();
+
+    this.logHistory({ 
+      action: 'apply', 
+      details: `应用建议: ${suggestion.reason}`,
+      suggestionId 
+    });
+
+    return `✓ 已应用建议: ${suggestion.reason}\n\n注意: 这是模拟应用，实际配置变更需要手动执行。`;
+  }
+
+  // 获取进化状态
+  status(): string {
+    const pendingSuggestions = this.suggestions.filter(s => !s.applied).length;
+    const appliedSuggestions = this.suggestions.filter(s => s.applied).length;
+    
+    // 读取历史统计
+    let historyCount = 0;
+    if (fs.existsSync(this.historyFile)) {
+      historyCount = fs.readFileSync(this.historyFile, 'utf-8').split('\n').filter(l => l.trim()).length;
+    }
+
+    return `## 进化系统状态
+
+**建议统计**
+- 待处理: ${pendingSuggestions} 条
+- 已应用: ${appliedSuggestions} 条
+
+**模式识别**
+- 已识别模式: ${this.patterns.length} 个
+
+**历史记录**
+- 总操作数: ${historyCount} 次
+
+**目录**: ${this.evolutionDir}`;
+  }
+
+  // 获取进化历史
+  history(limit: number = 20): string {
+    if (!fs.existsSync(this.historyFile)) {
+      return '无进化历史记录';
+    }
+
+    const lines = fs.readFileSync(this.historyFile, 'utf-8')
+      .split('\n')
+      .filter(l => l.trim())
+      .slice(-limit);
+
+    if (lines.length === 0) {
+      return '无进化历史记录';
+    }
+
+    const entries = lines.map(l => {
+      try {
+        return JSON.parse(l) as EvolutionHistory;
+      } catch (e) {
+        return null;
+      }
+    }).filter(Boolean) as EvolutionHistory[];
+
+    return `## 进化历史 (最近 ${entries.length} 条)
+
+${entries.map(e => {
+  const time = new Date(e.timestamp).toLocaleString('zh-CN');
+  const icon = e.action === 'analyze' ? '🔍' : e.action === 'suggest' ? '💡' : e.action === 'apply' ? '✓' : '↩';
+  return `- ${icon} [${time}] ${e.action}: ${e.details}`;
+}).join('\n')}`;
+  }
+}
+
+// 初始化进化系统
+const evolutionSystem = new EvolutionSystem(WORKDIR);
+
+// ============================================================================
+// V13.5: 上下文压缩系统 - 记住重要的，压缩冗余的
+// ============================================================================
+
+interface CompressionConfig {
+  maxTurns: number;           // 最大保留轮数
+  keepRecent: number;         // 完整保留最近 N 轮
+  maxToolOutput: number;      // 工具输出最大字符数
+  summaryMaxChars: number;    // 摘要最大字符数
+  autoCompress: boolean;      // 是否自动压缩
+  importanceThreshold: number; // 重要性阈值 (0-1)
+}
+
+interface MessageImportance {
+  score: number;              // 0-1
+  reasons: string[];
+}
+
+interface CompressionStats {
+  totalMessages: number;
+  compressedMessages: number;
+  savedTokens: number;
+  summaries: number;
+  lastCompression: number;
+}
+
+interface ContextSummary {
+  timestamp: number;
+  turnRange: [number, number];
+  content: string;
+  keyPoints: string[];
+}
+
+const DEFAULT_COMPRESSION_CONFIG: CompressionConfig = {
+  maxTurns: 50,
+  keepRecent: 10,
+  maxToolOutput: 3000,
+  summaryMaxChars: 500,
+  autoCompress: true,
+  importanceThreshold: 0.3
+};
+
+class ContextCompressor {
+  private config: CompressionConfig;
+  private configFile: string;
+  private summaryFile: string;
+  private summaries: ContextSummary[] = [];
+  private stats: CompressionStats = {
+    totalMessages: 0,
+    compressedMessages: 0,
+    savedTokens: 0,
+    summaries: 0,
+    lastCompression: 0
+  };
+
+  constructor(workspaceDir: string) {
+    const compressionDir = path.join(workspaceDir, '.compression');
+    if (!fs.existsSync(compressionDir)) {
+      fs.mkdirSync(compressionDir, { recursive: true });
+    }
+    
+    this.configFile = path.join(compressionDir, 'config.json');
+    this.summaryFile = path.join(compressionDir, 'summaries.json');
+    this.config = this.loadConfig();
+    this.loadSummaries();
+  }
+
+  private loadConfig(): CompressionConfig {
+    if (fs.existsSync(this.configFile)) {
+      try {
+        return { ...DEFAULT_COMPRESSION_CONFIG, ...JSON.parse(fs.readFileSync(this.configFile, 'utf-8')) };
+      } catch (e) { /* ignore */ }
+    }
+    return { ...DEFAULT_COMPRESSION_CONFIG };
+  }
+
+  private saveConfig() {
+    fs.writeFileSync(this.configFile, JSON.stringify(this.config, null, 2));
+  }
+
+  private loadSummaries() {
+    if (fs.existsSync(this.summaryFile)) {
+      try {
+        this.summaries = JSON.parse(fs.readFileSync(this.summaryFile, 'utf-8'));
+      } catch (e) { /* ignore */ }
+    }
+  }
+
+  private saveSummaries() {
+    fs.writeFileSync(this.summaryFile, JSON.stringify(this.summaries, null, 2));
+  }
+
+  // 评估消息重要性
+  private evaluateImportance(message: Anthropic.MessageParam): MessageImportance {
+    const reasons: string[] = [];
+    let score = 0.5; // 基础分
+
+    const content = typeof message.content === 'string' 
+      ? message.content 
+      : JSON.stringify(message.content);
+
+    // 用户消息通常更重要
+    if (message.role === 'user') {
+      score += 0.2;
+      reasons.push('用户消息');
+    }
+
+    // 包含关键词的消息更重要
+    const importantKeywords = ['重要', '记住', '必须', '关键', 'important', 'remember', 'must', 'critical'];
+    if (importantKeywords.some(kw => content.toLowerCase().includes(kw))) {
+      score += 0.2;
+      reasons.push('包含重要关键词');
+    }
+
+    // 包含代码或命令的消息
+    if (content.includes('```') || content.includes('$ ')) {
+      score += 0.1;
+      reasons.push('包含代码/命令');
+    }
+
+    // 工具结果通常可以压缩
+    if (Array.isArray(message.content)) {
+      const hasToolResult = message.content.some((c: any) => c.type === 'tool_result');
+      if (hasToolResult) {
+        score -= 0.2;
+        reasons.push('工具结果');
+      }
+    }
+
+    // 很短的消息可能不重要
+    if (content.length < 20) {
+      score -= 0.1;
+      reasons.push('内容过短');
+    }
+
+    // 很长的消息可能包含重要信息
+    if (content.length > 1000) {
+      score += 0.1;
+      reasons.push('内容丰富');
+    }
+
+    return { score: Math.max(0, Math.min(1, score)), reasons };
+  }
+
+  // 截断工具输出
+  truncateToolOutput(output: string): string {
+    if (output.length <= this.config.maxToolOutput) {
+      return output;
+    }
+    
+    const half = Math.floor(this.config.maxToolOutput / 2);
+    const truncated = output.slice(0, half) + 
+      `\n\n... [截断 ${output.length - this.config.maxToolOutput} 字符] ...\n\n` + 
+      output.slice(-half);
+    
+    this.stats.savedTokens += output.length - truncated.length;
+    return truncated;
+  }
+
+  // 生成摘要 (简化版，不调用 LLM)
+  private generateSummary(messages: Anthropic.MessageParam[]): string {
+    const points: string[] = [];
+    
+    for (const msg of messages) {
+      const content = typeof msg.content === 'string' 
+        ? msg.content 
+        : JSON.stringify(msg.content);
+      
+      // 提取关键信息
+      if (msg.role === 'user') {
+        const firstLine = content.split('\n')[0].slice(0, 100);
+        points.push(`用户: ${firstLine}`);
+      } else if (msg.role === 'assistant') {
+        // 提取工具调用
+        if (Array.isArray(msg.content)) {
+          const toolCalls = msg.content
+            .filter((c: any) => c.type === 'tool_use')
+            .map((c: any) => c.name);
+          if (toolCalls.length > 0) {
+            points.push(`工具: ${toolCalls.join(', ')}`);
+          }
+        }
+      }
+    }
+
+    return points.slice(0, 10).join('\n');
+  }
+
+  // 压缩历史
+  compress(history: Anthropic.MessageParam[]): Anthropic.MessageParam[] {
+    if (!this.config.autoCompress) {
+      return history;
+    }
+
+    this.stats.totalMessages = history.length;
+
+    // 如果历史不够长，不压缩
+    if (history.length <= this.config.keepRecent * 2) {
+      return history;
+    }
+
+    // 分离要保留和要压缩的消息
+    const toCompress = history.slice(0, -this.config.keepRecent * 2);
+    const toKeep = history.slice(-this.config.keepRecent * 2);
+
+    // 按重要性过滤
+    const important = toCompress.filter(msg => {
+      const { score } = this.evaluateImportance(msg);
+      return score >= this.config.importanceThreshold;
+    });
+
+    // 生成摘要
+    const summary = this.generateSummary(toCompress);
+    
+    // 保存摘要
+    const contextSummary: ContextSummary = {
+      timestamp: Date.now(),
+      turnRange: [0, toCompress.length],
+      content: summary,
+      keyPoints: summary.split('\n').filter(l => l.trim())
+    };
+    this.summaries.push(contextSummary);
+    this.saveSummaries();
+
+    // 构建压缩后的历史
+    const compressed: Anthropic.MessageParam[] = [];
+    
+    // 添加摘要作为系统消息
+    if (summary.trim()) {
+      compressed.push({
+        role: 'user',
+        content: `[历史摘要]\n${summary}\n[摘要结束]`
+      });
+      compressed.push({
+        role: 'assistant',
+        content: '我已了解之前的对话内容。'
+      });
+    }
+
+    // 添加重要消息
+    compressed.push(...important.slice(-5)); // 最多保留5条重要消息
+
+    // 添加最近的消息
+    compressed.push(...toKeep);
+
+    this.stats.compressedMessages = history.length - compressed.length;
+    this.stats.summaries = this.summaries.length;
+    this.stats.lastCompression = Date.now();
+
+    return compressed;
+  }
+
+  // 获取状态
+  getStatus(): string {
+    return `## 上下文压缩状态
+
+**配置**
+- 最大轮数: ${this.config.maxTurns}
+- 保留最近: ${this.config.keepRecent} 轮
+- 工具输出限制: ${this.config.maxToolOutput} 字符
+- 自动压缩: ${this.config.autoCompress ? '开启' : '关闭'}
+
+**统计**
+- 总消息数: ${this.stats.totalMessages}
+- 已压缩: ${this.stats.compressedMessages} 条
+- 节省 token: ~${this.stats.savedTokens}
+- 摘要数: ${this.stats.summaries}
+- 上次压缩: ${this.stats.lastCompression ? new Date(this.stats.lastCompression).toLocaleString('zh-CN') : '从未'}`;
+  }
+
+  // 手动压缩
+  manualCompress(history: Anthropic.MessageParam[]): { compressed: Anthropic.MessageParam[]; report: string } {
+    const before = history.length;
+    const compressed = this.compress(history);
+    const after = compressed.length;
+    
+    return {
+      compressed,
+      report: `压缩完成: ${before} → ${after} 条消息 (减少 ${before - after} 条)`
+    };
+  }
+
+  // 更新配置
+  updateConfig(updates: Partial<CompressionConfig>): string {
+    this.config = { ...this.config, ...updates };
+    this.saveConfig();
+    return `配置已更新:\n${JSON.stringify(updates, null, 2)}`;
+  }
+
+  // 获取摘要历史
+  getSummaries(limit: number = 5): string {
+    if (this.summaries.length === 0) {
+      return '暂无历史摘要';
+    }
+
+    const recent = this.summaries.slice(-limit);
+    return `## 历史摘要 (最近 ${recent.length} 条)
+
+${recent.map((s, i) => `
+### ${i + 1}. ${new Date(s.timestamp).toLocaleString('zh-CN')}
+**范围**: 第 ${s.turnRange[0]} - ${s.turnRange[1]} 轮
+**要点**:
+${s.keyPoints.map(p => `- ${p}`).join('\n')}
+`).join('\n')}`;
+  }
+}
+
+// 初始化上下文压缩器
+const contextCompressor = new ContextCompressor(WORKDIR);
+
+// ============================================================================
+// V14: 插件系统 - 动态加载外部能力
+// ============================================================================
+
+// 插件配置 Schema
+interface PluginConfigSchema {
+  type: 'object';
+  properties: Record<string, {
+    type: 'string' | 'number' | 'boolean' | 'array';
+    description?: string;
+    default?: unknown;
+    required?: boolean;
+    sensitive?: boolean;
+    uiHint?: string;
+  }>;
+}
+
+// 插件工具定义
+interface PluginTool {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+  handler: (args: Record<string, unknown>, ctx: PluginToolContext) => Promise<string> | string;
+}
+
+// 工具上下文
+interface PluginToolContext {
+  pluginId: string;
+  config: Record<string, unknown>;
+  workspaceDir: string;
+}
+
+// 生命周期钩子
+type PluginHookName = 
+  | 'before_agent_start'
+  | 'after_agent_end'
+  | 'before_tool_call'
+  | 'after_tool_call'
+  | 'message_received'
+  | 'message_sending';
+
+interface PluginHookEvent {
+  hookName: PluginHookName;
+  data: Record<string, unknown>;
+  timestamp: number;
+}
+
+interface PluginHookResult {
+  modified?: boolean;
+  data?: Record<string, unknown>;
+  block?: boolean;
+  blockReason?: string;
+}
+
+interface PluginHook {
+  name: PluginHookName;
+  priority?: number;
+  handler: (event: PluginHookEvent) => Promise<PluginHookResult | void> | PluginHookResult | void;
+}
+
+// 插件接口
+interface Plugin {
+  id: string;
+  name: string;
+  version: string;
+  description?: string;
+  author?: string;
+  
+  configSchema?: PluginConfigSchema;
+  tools?: PluginTool[];
+  hooks?: PluginHook[];
+  
+  onLoad?: (ctx: PluginContext) => Promise<void> | void;
+  onUnload?: () => Promise<void> | void;
+}
+
+// 插件上下文
+interface PluginContext {
+  workspaceDir: string;
+  config: Record<string, unknown>;
+  logger: PluginLogger;
+}
+
+// 插件日志
+interface PluginLogger {
+  info: (message: string) => void;
+  warn: (message: string) => void;
+  error: (message: string) => void;
+}
+
+// 已加载的插件
+interface LoadedPlugin {
+  plugin: Plugin;
+  config: Record<string, unknown>;
+  loadedAt: number;
+  source: string;
+  enabled: boolean;
+}
+
+// 插件管理器
+class PluginManager {
+  private plugins: Map<string, LoadedPlugin> = new Map();
+  private pluginDir: string;
+  private configFile: string;
+  private configs: Record<string, Record<string, unknown>> = {};
+
+  constructor(workspaceDir: string) {
+    this.pluginDir = path.join(workspaceDir, 'plugins');
+    this.configFile = path.join(workspaceDir, '.plugins.json');
+    
+    if (!fs.existsSync(this.pluginDir)) {
+      fs.mkdirSync(this.pluginDir, { recursive: true });
+    }
+    
+    this.loadConfigs();
+  }
+
+  private loadConfigs() {
+    if (fs.existsSync(this.configFile)) {
+      try {
+        this.configs = JSON.parse(fs.readFileSync(this.configFile, 'utf-8'));
+      } catch (e) {
+        console.log('\x1b[33m警告: 插件配置文件损坏\x1b[0m');
+      }
+    }
+  }
+
+  private saveConfigs() {
+    fs.writeFileSync(this.configFile, JSON.stringify(this.configs, null, 2));
+  }
+
+  private createLogger(pluginId: string): PluginLogger {
+    return {
+      info: (msg) => console.log(`\x1b[36m[Plugin:${pluginId}]\x1b[0m ${msg}`),
+      warn: (msg) => console.log(`\x1b[33m[Plugin:${pluginId}]\x1b[0m ${msg}`),
+      error: (msg) => console.log(`\x1b[31m[Plugin:${pluginId}]\x1b[0m ${msg}`)
+    };
+  }
+
+  // 发现插件
+  async discover(): Promise<string[]> {
+    const candidates: string[] = [];
+    
+    if (!fs.existsSync(this.pluginDir)) {
+      return candidates;
+    }
+
+    const entries = fs.readdirSync(this.pluginDir, { withFileTypes: true });
+    
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        // 目录插件: 检查 index.ts 或 package.json
+        const indexPath = path.join(this.pluginDir, entry.name, 'index.ts');
+        const pkgPath = path.join(this.pluginDir, entry.name, 'package.json');
+        
+        if (fs.existsSync(indexPath)) {
+          candidates.push(path.join(this.pluginDir, entry.name));
+        } else if (fs.existsSync(pkgPath)) {
+          try {
+            const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
+            if (pkg.openclaw?.plugin) {
+              candidates.push(path.join(this.pluginDir, entry.name));
+            }
+          } catch (e) { /* ignore */ }
+        }
+      } else if (entry.name.endsWith('.ts') || entry.name.endsWith('.js')) {
+        // 单文件插件
+        candidates.push(path.join(this.pluginDir, entry.name));
+      }
+    }
+
+    return candidates;
+  }
+
+  // 加载插件
+  async load(source: string): Promise<string> {
+    try {
+      // 检查是否是内置插件
+      const builtinPlugin = this.getBuiltinPlugin(source);
+      if (builtinPlugin) {
+        return this.registerPlugin(builtinPlugin, `builtin:${source}`);
+      }
+
+      // 检查文件是否存在
+      const fullPath = path.isAbsolute(source) ? source : path.join(this.pluginDir, source);
+      
+      if (!fs.existsSync(fullPath)) {
+        return `错误: 插件不存在 ${source}`;
+      }
+
+      // 动态导入插件 (简化版: 读取并解析)
+      // 注意: 实际生产环境需要更安全的沙箱执行
+      const stat = fs.statSync(fullPath);
+      let pluginPath = fullPath;
+      
+      if (stat.isDirectory()) {
+        pluginPath = path.join(fullPath, 'index.ts');
+        if (!fs.existsSync(pluginPath)) {
+          pluginPath = path.join(fullPath, 'index.js');
+        }
+      }
+
+      // 这里简化处理，实际应该用 dynamic import
+      // const module = await import(pluginPath);
+      // const plugin = module.default as Plugin;
+      
+      return `插件加载功能需要 ESM 动态导入支持。请使用内置插件或手动注册。\n可用内置插件: weather, calculator, timestamp`;
+    } catch (e: any) {
+      return `加载插件失败: ${e.message}`;
+    }
+  }
+
+  // 获取内置插件
+  private getBuiltinPlugin(name: string): Plugin | null {
+    const builtins: Record<string, Plugin> = {
+      'weather': {
+        id: 'weather',
+        name: 'Weather Plugin',
+        version: '1.0.0',
+        description: '获取天气信息 (模拟)',
+        tools: [{
+          name: 'plugin_weather',
+          description: '获取指定城市的天气',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              city: { type: 'string', description: '城市名' }
+            }
+          },
+          handler: (args) => {
+            const city = args.city || 'Beijing';
+            const temps = [18, 22, 25, 28, 30, 15, 20];
+            const conditions = ['晴', '多云', '阴', '小雨', '大风'];
+            const temp = temps[Math.floor(Math.random() * temps.length)];
+            const condition = conditions[Math.floor(Math.random() * conditions.length)];
+            return `${city} 天气: ${condition}, ${temp}°C`;
+          }
+        }]
+      },
+      'calculator': {
+        id: 'calculator',
+        name: 'Calculator Plugin',
+        version: '1.0.0',
+        description: '数学计算',
+        tools: [{
+          name: 'plugin_calc',
+          description: '执行数学计算',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              expression: { type: 'string', description: '数学表达式' }
+            },
+            required: ['expression']
+          },
+          handler: (args) => {
+            try {
+              // 安全的数学计算 (只允许数字和基本运算符)
+              const expr = String(args.expression).replace(/[^0-9+\-*/().%\s]/g, '');
+              if (!expr) return '错误: 无效表达式';
+              const result = Function(`"use strict"; return (${expr})`)();
+              return `${args.expression} = ${result}`;
+            } catch (e: any) {
+              return `计算错误: ${e.message}`;
+            }
+          }
+        }]
+      },
+      'timestamp': {
+        id: 'timestamp',
+        name: 'Timestamp Plugin',
+        version: '1.0.0',
+        description: '时间戳转换',
+        tools: [{
+          name: 'plugin_timestamp',
+          description: '时间戳与日期互转',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              value: { type: 'string', description: '时间戳或日期字符串' },
+              format: { type: 'string', description: '输出格式: iso/unix/locale' }
+            },
+            required: ['value']
+          },
+          handler: (args) => {
+            const value = String(args.value);
+            const format = args.format || 'iso';
+            
+            let date: Date;
+            if (/^\d{10,13}$/.test(value)) {
+              // Unix 时间戳
+              const ts = value.length === 10 ? parseInt(value) * 1000 : parseInt(value);
+              date = new Date(ts);
+            } else {
+              date = new Date(value);
+            }
+            
+            if (isNaN(date.getTime())) {
+              return '错误: 无效的时间值';
+            }
+            
+            switch (format) {
+              case 'unix': return `Unix 时间戳: ${Math.floor(date.getTime() / 1000)}`;
+              case 'locale': return `本地时间: ${date.toLocaleString('zh-CN')}`;
+              default: return `ISO 时间: ${date.toISOString()}`;
+            }
+          }
+        }]
+      }
+    };
+    
+    return builtins[name] || null;
+  }
+
+  // 注册插件
+  private registerPlugin(plugin: Plugin, source: string): string {
+    if (this.plugins.has(plugin.id)) {
+      return `插件 ${plugin.id} 已加载`;
+    }
+
+    const config = this.configs[plugin.id] || {};
+    
+    // 应用默认配置
+    if (plugin.configSchema?.properties) {
+      for (const [key, schema] of Object.entries(plugin.configSchema.properties)) {
+        if (config[key] === undefined && schema.default !== undefined) {
+          config[key] = schema.default;
+        }
+      }
+    }
+
+    const loaded: LoadedPlugin = {
+      plugin,
+      config,
+      loadedAt: Date.now(),
+      source,
+      enabled: true
+    };
+
+    this.plugins.set(plugin.id, loaded);
+    this.configs[plugin.id] = config;
+    this.saveConfigs();
+
+    // 调用 onLoad
+    if (plugin.onLoad) {
+      try {
+        plugin.onLoad({
+          workspaceDir: WORKDIR,
+          config,
+          logger: this.createLogger(plugin.id)
+        });
+      } catch (e: any) {
+        console.log(`\x1b[33m[Plugin:${plugin.id}] onLoad 错误: ${e.message}\x1b[0m`);
+      }
+    }
+
+    console.log(`\x1b[32m[Plugin] 已加载: ${plugin.name} v${plugin.version}\x1b[0m`);
+    return `已加载插件: ${plugin.name} v${plugin.version}`;
+  }
+
+  // 卸载插件
+  async unload(pluginId: string): Promise<string> {
+    const loaded = this.plugins.get(pluginId);
+    if (!loaded) {
+      return `插件 ${pluginId} 未加载`;
+    }
+
+    // 调用 onUnload
+    if (loaded.plugin.onUnload) {
+      try {
+        await loaded.plugin.onUnload();
+      } catch (e: any) {
+        console.log(`\x1b[33m[Plugin:${pluginId}] onUnload 错误: ${e.message}\x1b[0m`);
+      }
+    }
+
+    this.plugins.delete(pluginId);
+    console.log(`\x1b[33m[Plugin] 已卸载: ${pluginId}\x1b[0m`);
+    return `已卸载插件: ${pluginId}`;
+  }
+
+  // 获取所有插件工具
+  getTools(): Anthropic.Tool[] {
+    const tools: Anthropic.Tool[] = [];
+    
+    for (const [_, loaded] of this.plugins) {
+      if (!loaded.enabled || !loaded.plugin.tools) continue;
+      
+      for (const tool of loaded.plugin.tools) {
+        tools.push({
+          name: tool.name,
+          description: `[Plugin:${loaded.plugin.id}] ${tool.description}`,
+          input_schema: tool.inputSchema as any
+        });
+      }
+    }
+    
+    return tools;
+  }
+
+  // 执行插件工具
+  async executeTool(toolName: string, args: Record<string, unknown>): Promise<string | null> {
+    for (const [_, loaded] of this.plugins) {
+      if (!loaded.enabled || !loaded.plugin.tools) continue;
+      
+      const tool = loaded.plugin.tools.find(t => t.name === toolName);
+      if (tool) {
+        try {
+          const ctx: PluginToolContext = {
+            pluginId: loaded.plugin.id,
+            config: loaded.config,
+            workspaceDir: WORKDIR
+          };
+          return await tool.handler(args, ctx);
+        } catch (e: any) {
+          return `[Plugin:${loaded.plugin.id}] 工具执行错误: ${e.message}`;
+        }
+      }
+    }
+    
+    return null; // 不是插件工具
+  }
+
+  // 触发钩子
+  async triggerHook(hookName: PluginHookName, data: Record<string, unknown>): Promise<PluginHookResult | void> {
+    const event: PluginHookEvent = {
+      hookName,
+      data,
+      timestamp: Date.now()
+    };
+
+    // 收集所有钩子并按优先级排序
+    const hooks: Array<{ pluginId: string; hook: PluginHook }> = [];
+    
+    for (const [pluginId, loaded] of this.plugins) {
+      if (!loaded.enabled || !loaded.plugin.hooks) continue;
+      
+      for (const hook of loaded.plugin.hooks) {
+        if (hook.name === hookName) {
+          hooks.push({ pluginId, hook });
+        }
+      }
+    }
+
+    hooks.sort((a, b) => (a.hook.priority || 100) - (b.hook.priority || 100));
+
+    // 依次执行钩子
+    for (const { pluginId, hook } of hooks) {
+      try {
+        const result = await hook.handler(event);
+        if (result?.block) {
+          return result;
+        }
+        if (result?.modified && result.data) {
+          event.data = { ...event.data, ...result.data };
+        }
+      } catch (e: any) {
+        console.log(`\x1b[33m[Plugin:${pluginId}] Hook 错误: ${e.message}\x1b[0m`);
+      }
+    }
+  }
+
+  // 列出所有插件
+  list(): string {
+    if (this.plugins.size === 0) {
+      return '暂无已加载的插件\n\n可用内置插件: weather, calculator, timestamp\n使用 plugin_load 加载';
+    }
+
+    const lines: string[] = ['## 已加载插件\n'];
+    
+    for (const [id, loaded] of this.plugins) {
+      const status = loaded.enabled ? '🟢' : '⚪';
+      const toolCount = loaded.plugin.tools?.length || 0;
+      const hookCount = loaded.plugin.hooks?.length || 0;
+      
+      lines.push(`### ${status} ${loaded.plugin.name} (${id})`);
+      lines.push(`- 版本: ${loaded.plugin.version}`);
+      if (loaded.plugin.description) {
+        lines.push(`- 描述: ${loaded.plugin.description}`);
+      }
+      lines.push(`- 工具: ${toolCount} 个`);
+      lines.push(`- 钩子: ${hookCount} 个`);
+      lines.push(`- 来源: ${loaded.source}`);
+      lines.push('');
+    }
+
+    return lines.join('\n');
+  }
+
+  // 获取插件信息
+  getInfo(pluginId: string): string {
+    const loaded = this.plugins.get(pluginId);
+    if (!loaded) {
+      return `插件 ${pluginId} 未加载`;
+    }
+
+    const plugin = loaded.plugin;
+    const lines: string[] = [
+      `## ${plugin.name}`,
+      '',
+      `- **ID**: ${plugin.id}`,
+      `- **版本**: ${plugin.version}`,
+      `- **作者**: ${plugin.author || '未知'}`,
+      `- **描述**: ${plugin.description || '无'}`,
+      `- **状态**: ${loaded.enabled ? '已启用' : '已禁用'}`,
+      `- **加载时间**: ${new Date(loaded.loadedAt).toLocaleString('zh-CN')}`,
+      ''
+    ];
+
+    if (plugin.tools && plugin.tools.length > 0) {
+      lines.push('### 提供的工具');
+      for (const tool of plugin.tools) {
+        lines.push(`- **${tool.name}**: ${tool.description}`);
+      }
+      lines.push('');
+    }
+
+    if (plugin.hooks && plugin.hooks.length > 0) {
+      lines.push('### 注册的钩子');
+      for (const hook of plugin.hooks) {
+        lines.push(`- ${hook.name} (优先级: ${hook.priority || 100})`);
+      }
+      lines.push('');
+    }
+
+    if (plugin.configSchema?.properties) {
+      lines.push('### 配置项');
+      for (const [key, schema] of Object.entries(plugin.configSchema.properties)) {
+        const value = loaded.config[key];
+        const displayValue = schema.sensitive ? '[HIDDEN]' : JSON.stringify(value);
+        lines.push(`- **${key}** (${schema.type}): ${displayValue}`);
+        if (schema.description) {
+          lines.push(`  ${schema.description}`);
+        }
+      }
+    }
+
+    return lines.join('\n');
+  }
+
+  // 获取/设置插件配置
+  getConfig(pluginId: string): Record<string, unknown> | null {
+    return this.plugins.get(pluginId)?.config || null;
+  }
+
+  setConfig(pluginId: string, updates: Record<string, unknown>): string {
+    const loaded = this.plugins.get(pluginId);
+    if (!loaded) {
+      return `插件 ${pluginId} 未加载`;
+    }
+
+    // 验证配置
+    if (loaded.plugin.configSchema?.properties) {
+      for (const [key, value] of Object.entries(updates)) {
+        const schema = loaded.plugin.configSchema.properties[key];
+        if (!schema) {
+          return `未知配置项: ${key}`;
+        }
+        // 简单类型检查
+        const actualType = Array.isArray(value) ? 'array' : typeof value;
+        if (schema.type !== actualType) {
+          return `配置项 ${key} 类型错误: 期望 ${schema.type}, 实际 ${actualType}`;
+        }
+      }
+    }
+
+    loaded.config = { ...loaded.config, ...updates };
+    this.configs[pluginId] = loaded.config;
+    this.saveConfigs();
+
+    return `已更新插件 ${pluginId} 配置`;
+  }
+
+  // 启用/禁用插件
+  setEnabled(pluginId: string, enabled: boolean): string {
+    const loaded = this.plugins.get(pluginId);
+    if (!loaded) {
+      return `插件 ${pluginId} 未加载`;
+    }
+
+    loaded.enabled = enabled;
+    return `插件 ${pluginId} 已${enabled ? '启用' : '禁用'}`;
+  }
+
+  // 获取插件数量
+  get count(): number {
+    return this.plugins.size;
+  }
+
+  // 获取已启用的插件数量
+  get enabledCount(): number {
+    return Array.from(this.plugins.values()).filter(p => p.enabled).length;
+  }
+}
+
+// 初始化插件管理器
+const pluginManager = new PluginManager(WORKDIR);
+
+// ============================================================================
+// V15 新增: 多模型协作系统 - 智能路由与成本优化
+// ============================================================================
+
+interface ModelConfig {
+  id: string;              // 模型 ID: "claude-sonnet-4-20250514"
+  name: string;            // 显示名称
+  provider: string;        // 提供商: "anthropic", "openai", "local"
+  capabilities: string[];  // 能力: ["reasoning", "coding", "vision"]
+  costPer1kInput: number;  // 输入成本 $/1k tokens
+  costPer1kOutput: number; // 输出成本 $/1k tokens
+  maxTokens: number;       // 最大上下文窗口
+  priority: number;        // 优先级 (越高越优先)
+  enabled: boolean;
+  apiKeyEnv?: string;      // API 密钥环境变量名
+  baseUrl?: string;        // 自定义 API 端点
+}
+
+interface UsageRecord {
+  timestamp: number;
+  modelId: string;
+  inputTokens: number;
+  outputTokens: number;
+  cost: number;
+  taskType: string;
+  latencyMs: number;
+  success: boolean;
+}
+
+interface RouterConfig {
+  strategy: "task_type" | "cost_optimize" | "quality_first" | "round_robin";
+  defaultModel: string;
+  fallbackModel: string;
+  taskRouting: Record<string, string[]>; // task_type → [model_ids]
+}
+
+class ModelRouter {
+  private models: Map<string, ModelConfig> = new Map();
+  private config: RouterConfig;
+  private usageFile: string;
+  private registryFile: string;
+  private configFile: string;
+  private roundRobinIndex: number = 0;
+
+  constructor(workspaceDir: string) {
+    const modelsDir = path.join(workspaceDir, '.models');
+    if (!fs.existsSync(modelsDir)) {
+      fs.mkdirSync(modelsDir, { recursive: true });
+    }
+    const usageDir = path.join(modelsDir, 'usage');
+    if (!fs.existsSync(usageDir)) {
+      fs.mkdirSync(usageDir, { recursive: true });
+    }
+
+    this.registryFile = path.join(modelsDir, 'registry.json');
+    this.configFile = path.join(modelsDir, 'config.json');
+    const today = new Date().toISOString().split('T')[0];
+    this.usageFile = path.join(usageDir, `${today}.jsonl`);
+
+    // 默认路由配置
+    this.config = {
+      strategy: 'task_type',
+      defaultModel: MODEL,
+      fallbackModel: 'claude-haiku',
+      taskRouting: {
+        reasoning: ['claude-opus-4-6', 'gpt-4-turbo'],
+        coding: ['claude-sonnet-4-20250514', 'claude-opus-4-6', 'gpt-4-turbo'],
+        translate: ['claude-haiku', 'gpt-3.5-turbo'],
+        summarize: ['claude-haiku', 'claude-sonnet-4-20250514'],
+        vision: ['claude-sonnet-4-20250514', 'gpt-4-vision'],
+        chat: ['claude-sonnet-4-20250514', 'claude-opus-4-6']
+      }
+    };
+
+    this.loadRegistry();
+    this.loadConfig();
+    this.registerDefaults();
+  }
+
+  private loadRegistry() {
+    if (fs.existsSync(this.registryFile)) {
+      try {
+        const data = JSON.parse(fs.readFileSync(this.registryFile, 'utf-8'));
+        for (const model of data.models || []) {
+          this.models.set(model.id, model);
+        }
+      } catch (e) {
+        console.log('\x1b[33m警告: 模型注册表损坏\x1b[0m');
+      }
+    }
+  }
+
+  private saveRegistry() {
+    const data = { models: Array.from(this.models.values()), updated: Date.now() };
+    fs.writeFileSync(this.registryFile, JSON.stringify(data, null, 2));
+  }
+
+  private loadConfig() {
+    if (fs.existsSync(this.configFile)) {
+      try {
+        const saved = JSON.parse(fs.readFileSync(this.configFile, 'utf-8'));
+        this.config = { ...this.config, ...saved };
+      } catch (e) { /* use defaults */ }
+    }
+  }
+
+  private saveConfig() {
+    fs.writeFileSync(this.configFile, JSON.stringify(this.config, null, 2));
+  }
+
+  // 注册默认模型 (当前运行的模型)
+  private registerDefaults() {
+    if (!this.models.has(MODEL)) {
+      this.models.set(MODEL, {
+        id: MODEL,
+        name: 'Claude Opus (当前)',
+        provider: 'anthropic',
+        capabilities: ['reasoning', 'coding', 'chat', 'vision', 'translate', 'summarize'],
+        costPer1kInput: 0.015,
+        costPer1kOutput: 0.075,
+        maxTokens: 200000,
+        priority: 100,
+        enabled: true,
+        apiKeyEnv: 'ANTHROPIC_API_KEY',
+        baseUrl: process.env.ANTHROPIC_BASE_URL
+      });
+    }
+
+    // 注册一些常用模型模板 (默认禁用)
+    const defaults: ModelConfig[] = [
+      {
+        id: 'claude-sonnet-4-20250514',
+        name: 'Claude Sonnet',
+        provider: 'anthropic',
+        capabilities: ['reasoning', 'coding', 'chat', 'vision'],
+        costPer1kInput: 0.003,
+        costPer1kOutput: 0.015,
+        maxTokens: 200000,
+        priority: 80,
+        enabled: false,
+        apiKeyEnv: 'ANTHROPIC_API_KEY'
+      },
+      {
+        id: 'claude-haiku',
+        name: 'Claude Haiku',
+        provider: 'anthropic',
+        capabilities: ['chat', 'translate', 'summarize'],
+        costPer1kInput: 0.00025,
+        costPer1kOutput: 0.00125,
+        maxTokens: 200000,
+        priority: 60,
+        enabled: false,
+        apiKeyEnv: 'ANTHROPIC_API_KEY'
+      },
+      {
+        id: 'gpt-4-turbo',
+        name: 'GPT-4 Turbo',
+        provider: 'openai',
+        capabilities: ['reasoning', 'coding', 'chat', 'vision'],
+        costPer1kInput: 0.01,
+        costPer1kOutput: 0.03,
+        maxTokens: 128000,
+        priority: 85,
+        enabled: false,
+        apiKeyEnv: 'OPENAI_API_KEY'
+      },
+      {
+        id: 'gpt-3.5-turbo',
+        name: 'GPT-3.5 Turbo',
+        provider: 'openai',
+        capabilities: ['chat', 'translate', 'summarize'],
+        costPer1kInput: 0.0005,
+        costPer1kOutput: 0.0015,
+        maxTokens: 16000,
+        priority: 50,
+        enabled: false,
+        apiKeyEnv: 'OPENAI_API_KEY'
+      }
+    ];
+
+    for (const model of defaults) {
+      if (!this.models.has(model.id)) {
+        this.models.set(model.id, model);
+      }
+    }
+    this.saveRegistry();
+  }
+
+  // 注册新模型
+  register(args: {
+    provider: string;
+    model_id: string;
+    name: string;
+    capabilities?: string[];
+    cost_input?: number;
+    cost_output?: number;
+    max_tokens?: number;
+    priority?: number;
+    api_key_env?: string;
+    base_url?: string;
+  }): string {
+    const model: ModelConfig = {
+      id: args.model_id,
+      name: args.name,
+      provider: args.provider,
+      capabilities: args.capabilities || ['chat'],
+      costPer1kInput: args.cost_input || 0,
+      costPer1kOutput: args.cost_output || 0,
+      maxTokens: args.max_tokens || 4096,
+      priority: args.priority || 50,
+      enabled: true,
+      apiKeyEnv: args.api_key_env,
+      baseUrl: args.base_url
+    };
+
+    this.models.set(model.id, model);
+    this.saveRegistry();
+    return `已注册模型: ${model.name} (${model.id})`;
+  }
+
+  // 路由选择模型
+  selectModel(taskType?: string, complexity?: string): ModelConfig {
+    const enabledModels = Array.from(this.models.values()).filter(m => m.enabled);
+    if (enabledModels.length === 0) {
+      throw new Error('没有可用模型');
+    }
+
+    switch (this.config.strategy) {
+      case 'task_type':
+        return this.routeByTaskType(taskType || 'chat', enabledModels);
+      case 'cost_optimize':
+        return this.routeByCost(taskType || 'chat', enabledModels);
+      case 'quality_first':
+        return this.routeByQuality(enabledModels);
+      case 'round_robin':
+        return this.routeRoundRobin(enabledModels);
+      default:
+        return enabledModels[0];
+    }
+  }
+
+  private routeByTaskType(taskType: string, models: ModelConfig[]): ModelConfig {
+    const preferred = this.config.taskRouting[taskType] || [];
+    for (const modelId of preferred) {
+      const model = models.find(m => m.id === modelId);
+      if (model) return model;
+    }
+    // 没有匹配，按优先级
+    return models.sort((a, b) => b.priority - a.priority)[0];
+  }
+
+  private routeByCost(taskType: string, models: ModelConfig[]): ModelConfig {
+    // 过滤出具备所需能力的模型
+    const capable = models.filter(m =>
+      m.capabilities.includes(taskType) || taskType === 'chat'
+    );
+    const pool = capable.length > 0 ? capable : models;
+    // 按成本排序 (输出成本权重更大)
+    return pool.sort((a, b) =>
+      (a.costPer1kInput + a.costPer1kOutput * 2) -
+      (b.costPer1kInput + b.costPer1kOutput * 2)
+    )[0];
+  }
+
+  private routeByQuality(models: ModelConfig[]): ModelConfig {
+    return models.sort((a, b) => b.priority - a.priority)[0];
+  }
+
+  private routeRoundRobin(models: ModelConfig[]): ModelConfig {
+    const sorted = models.sort((a, b) => b.priority - a.priority);
+    const selected = sorted[this.roundRobinIndex % sorted.length];
+    this.roundRobinIndex++;
+    return selected;
+  }
+
+  // 调用模型 (通过 Anthropic SDK 或 OpenAI 兼容接口)
+  async callModel(
+    modelId: string,
+    prompt: string,
+    systemPrompt?: string
+  ): Promise<{ text: string; inputTokens: number; outputTokens: number; latencyMs: number }> {
+    const model = this.models.get(modelId);
+    if (!model) throw new Error(`模型未注册: ${modelId}`);
+    if (!model.enabled) throw new Error(`模型已禁用: ${modelId}`);
+
+    const startTime = Date.now();
+    
+    // 获取 API key
+    const apiKey = model.apiKeyEnv ? process.env[model.apiKeyEnv] : process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) {
+      throw new Error(`缺少 API 密钥: ${model.apiKeyEnv || 'ANTHROPIC_API_KEY'}`);
+    }
+
+    let text = '';
+    let inputTokens = 0;
+    let outputTokens = 0;
+
+    if (model.provider === 'anthropic') {
+      // 使用 Anthropic SDK
+      const apiClient = new Anthropic({
+        apiKey,
+        baseURL: model.baseUrl || process.env.ANTHROPIC_BASE_URL
+      });
+      
+      const messages: Anthropic.MessageParam[] = [{ role: 'user', content: prompt }];
+      const response = await apiClient.messages.create({
+        model: model.id,
+        max_tokens: 4096,
+        system: systemPrompt || '',
+        messages
+      });
+
+      text = response.content
+        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+        .map(b => b.text)
+        .join('');
+      inputTokens = response.usage?.input_tokens || 0;
+      outputTokens = response.usage?.output_tokens || 0;
+
+    } else if (model.provider === 'openai') {
+      // OpenAI 兼容接口 (通过 fetch)
+      const baseUrl = model.baseUrl || 'https://api.openai.com/v1';
+      const body: Record<string, unknown> = {
+        model: model.id,
+        messages: [
+          ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
+          { role: 'user', content: prompt }
+        ],
+        max_tokens: 4096
+      };
+
+      const resp = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        body: JSON.stringify(body)
+      });
+
+      if (!resp.ok) {
+        throw new Error(`OpenAI API 错误: ${resp.status} ${resp.statusText}`);
+      }
+
+      const data = await resp.json() as any;
+      text = data.choices?.[0]?.message?.content || '';
+      inputTokens = data.usage?.prompt_tokens || 0;
+      outputTokens = data.usage?.completion_tokens || 0;
+
+    } else {
+      // 通用 OpenAI 兼容接口 (本地模型等)
+      const baseUrl = model.baseUrl || 'http://localhost:11434/v1';
+      const body: Record<string, unknown> = {
+        model: model.id,
+        messages: [
+          ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
+          { role: 'user', content: prompt }
+        ],
+        max_tokens: 4096
+      };
+
+      const resp = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(apiKey && apiKey !== 'none' ? { 'Authorization': `Bearer ${apiKey}` } : {})
+        },
+        body: JSON.stringify(body)
+      });
+
+      if (!resp.ok) {
+        throw new Error(`API 错误: ${resp.status} ${resp.statusText}`);
+      }
+
+      const data = await resp.json() as any;
+      text = data.choices?.[0]?.message?.content || '';
+      inputTokens = data.usage?.prompt_tokens || 0;
+      outputTokens = data.usage?.completion_tokens || 0;
+    }
+
+    const latencyMs = Date.now() - startTime;
+
+    return { text, inputTokens, outputTokens, latencyMs };
+  }
+
+  // 带降级的调用
+  async callWithFallback(
+    prompt: string,
+    taskType?: string,
+    systemPrompt?: string
+  ): Promise<{ text: string; modelUsed: string; cost: number }> {
+    // 获取候选模型列表
+    const candidates: ModelConfig[] = [];
+    
+    // 首选模型
+    try {
+      const primary = this.selectModel(taskType);
+      candidates.push(primary);
+    } catch (e) { /* no models */ }
+    
+    // 降级模型
+    if (this.config.fallbackModel) {
+      const fallback = this.models.get(this.config.fallbackModel);
+      if (fallback && fallback.enabled) {
+        candidates.push(fallback);
+      }
+    }
+
+    // 默认模型
+    const defaultModel = this.models.get(this.config.defaultModel);
+    if (defaultModel && defaultModel.enabled) {
+      candidates.push(defaultModel);
+    }
+
+    // 去重
+    const uniqueCandidates = [...new Map(candidates.map(m => [m.id, m])).values()];
+
+    let lastError = '';
+    for (const model of uniqueCandidates) {
+      try {
+        const result = await this.callModel(model.id, prompt, systemPrompt);
+        const cost = (result.inputTokens / 1000) * model.costPer1kInput +
+                     (result.outputTokens / 1000) * model.costPer1kOutput;
+        
+        // 记录使用
+        this.recordUsage({
+          timestamp: Date.now(),
+          modelId: model.id,
+          inputTokens: result.inputTokens,
+          outputTokens: result.outputTokens,
+          cost,
+          taskType: taskType || 'chat',
+          latencyMs: result.latencyMs,
+          success: true
+        });
+
+        return { text: result.text, modelUsed: model.id, cost };
+      } catch (e: any) {
+        lastError = e.message;
+        // 记录失败
+        this.recordUsage({
+          timestamp: Date.now(),
+          modelId: model.id,
+          inputTokens: 0,
+          outputTokens: 0,
+          cost: 0,
+          taskType: taskType || 'chat',
+          latencyMs: 0,
+          success: false
+        });
+        console.log(`\x1b[33m[ModelRouter] ${model.id} 失败: ${lastError}，尝试下一个...\x1b[0m`);
+      }
+    }
+
+    throw new Error(`所有模型都失败了: ${lastError}`);
+  }
+
+  // 记录使用
+  private recordUsage(record: UsageRecord) {
+    const line = JSON.stringify(record) + '\n';
+    fs.appendFileSync(this.usageFile, line);
+  }
+
+  // 读取使用记录
+  private readUsage(days: number = 7): UsageRecord[] {
+    const records: UsageRecord[] = [];
+    const modelsDir = path.dirname(this.usageFile);
+    
+    if (!fs.existsSync(modelsDir)) return records;
+
+    const now = Date.now();
+    const cutoff = now - days * 86400000;
+
+    const files = fs.readdirSync(modelsDir)
+      .filter(f => f.endsWith('.jsonl'))
+      .sort()
+      .reverse();
+
+    for (const file of files) {
+      const content = fs.readFileSync(path.join(modelsDir, file), 'utf-8');
+      for (const line of content.split('\n').filter(l => l.trim())) {
+        try {
+          const record = JSON.parse(line) as UsageRecord;
+          if (record.timestamp >= cutoff) {
+            records.push(record);
+          }
+        } catch (e) { /* skip bad lines */ }
+      }
+    }
+
+    return records;
+  }
+
+  // 获取成本统计
+  getCostReport(days: number = 7, groupBy: string = 'model'): string {
+    const records = this.readUsage(days);
+    
+    if (records.length === 0) {
+      return `📊 最近 ${days} 天无使用记录`;
+    }
+
+    const lines: string[] = [`📊 模型使用成本 (最近 ${days} 天)`, '━'.repeat(40)];
+
+    if (groupBy === 'model') {
+      const byModel: Record<string, { calls: number; cost: number; tokens: number; success: number }> = {};
+      for (const r of records) {
+        if (!byModel[r.modelId]) {
+          byModel[r.modelId] = { calls: 0, cost: 0, tokens: 0, success: 0 };
+        }
+        byModel[r.modelId].calls++;
+        byModel[r.modelId].cost += r.cost;
+        byModel[r.modelId].tokens += r.inputTokens + r.outputTokens;
+        if (r.success) byModel[r.modelId].success++;
+      }
+
+      let totalCost = 0;
+      let totalCalls = 0;
+      for (const [modelId, stats] of Object.entries(byModel)) {
+        const name = this.models.get(modelId)?.name || modelId;
+        const successRate = stats.calls > 0 ? ((stats.success / stats.calls) * 100).toFixed(0) : '0';
+        lines.push(`${name}`);
+        lines.push(`  调用: ${stats.calls} 次 | 成功率: ${successRate}%`);
+        lines.push(`  Tokens: ${stats.tokens.toLocaleString()} | 成本: ${stats.cost.toFixed(4)}`);
+        totalCost += stats.cost;
+        totalCalls += stats.calls;
+      }
+
+      lines.push('━'.repeat(40));
+      lines.push(`总计: ${totalCalls} 次调用 | ${totalCost.toFixed(4)}`);
+
+    } else if (groupBy === 'day') {
+      const byDay: Record<string, { calls: number; cost: number }> = {};
+      for (const r of records) {
+        const day = new Date(r.timestamp).toISOString().split('T')[0];
+        if (!byDay[day]) byDay[day] = { calls: 0, cost: 0 };
+        byDay[day].calls++;
+        byDay[day].cost += r.cost;
+      }
+
+      for (const [day, stats] of Object.entries(byDay).sort()) {
+        lines.push(`${day}: ${stats.calls} 次 | ${stats.cost.toFixed(4)}`);
+      }
+
+    } else if (groupBy === 'task') {
+      const byTask: Record<string, { calls: number; cost: number }> = {};
+      for (const r of records) {
+        if (!byTask[r.taskType]) byTask[r.taskType] = { calls: 0, cost: 0 };
+        byTask[r.taskType].calls++;
+        byTask[r.taskType].cost += r.cost;
+      }
+
+      for (const [task, stats] of Object.entries(byTask)) {
+        lines.push(`${task}: ${stats.calls} 次 | ${stats.cost.toFixed(4)}`);
+      }
+    }
+
+    return lines.join('\n');
+  }
+
+  // 列出模型
+  list(filter?: { provider?: string; capability?: string }): string {
+    let models = Array.from(this.models.values());
+    
+    if (filter?.provider) {
+      models = models.filter(m => m.provider === filter.provider);
+    }
+    if (filter?.capability) {
+      models = models.filter(m => m.capabilities.includes(filter.capability!));
+    }
+
+    if (models.length === 0) {
+      return '没有匹配的模型';
+    }
+
+    const lines: string[] = ['## 已注册模型\n'];
+    
+    // 按提供商分组
+    const byProvider: Record<string, ModelConfig[]> = {};
+    for (const model of models) {
+      if (!byProvider[model.provider]) byProvider[model.provider] = [];
+      byProvider[model.provider].push(model);
+    }
+
+    for (const [provider, providerModels] of Object.entries(byProvider)) {
+      lines.push(`### ${provider}`);
+      for (const m of providerModels.sort((a, b) => b.priority - a.priority)) {
+        const status = m.enabled ? '🟢' : '⚪';
+        const isCurrent = m.id === MODEL ? ' ← 当前' : '';
+        lines.push(`${status} **${m.name}** (${m.id})${isCurrent}`);
+        lines.push(`   能力: ${m.capabilities.join(', ')}`);
+        lines.push(`   成本: ${m.costPer1kInput}/1k入 ${m.costPer1kOutput}/1k出`);
+        lines.push(`   优先级: ${m.priority} | 上下文: ${(m.maxTokens / 1000).toFixed(0)}k`);
+      }
+      lines.push('');
+    }
+
+    lines.push(`策略: ${this.config.strategy} | 默认: ${this.config.defaultModel}`);
+    return lines.join('\n');
+  }
+
+  // 更新路由配置
+  updateConfig(updates: Partial<RouterConfig>): string {
+    if (updates.strategy) this.config.strategy = updates.strategy;
+    if (updates.defaultModel) this.config.defaultModel = updates.defaultModel;
+    if (updates.fallbackModel) this.config.fallbackModel = updates.fallbackModel;
+    if (updates.taskRouting) {
+      this.config.taskRouting = { ...this.config.taskRouting, ...updates.taskRouting };
+    }
+    this.saveConfig();
+    return `路由配置已更新:\n策略: ${this.config.strategy}\n默认: ${this.config.defaultModel}\n降级: ${this.config.fallbackModel}`;
+  }
+
+  // 启用/禁用模型
+  setModelEnabled(modelId: string, enabled: boolean): string {
+    const model = this.models.get(modelId);
+    if (!model) return `模型未注册: ${modelId}`;
+    model.enabled = enabled;
+    this.saveRegistry();
+    return `模型 ${model.name} 已${enabled ? '启用' : '禁用'}`;
+  }
+
+  // 获取模型数量
+  get count(): number {
+    return this.models.size;
+  }
+
+  get enabledCount(): number {
+    return Array.from(this.models.values()).filter(m => m.enabled).length;
+  }
+}
+
+// 初始化模型路由器
+const modelRouter = new ModelRouter(WORKDIR);
+
+// ============================================================================
+// 系统提示
+// ============================================================================
+
+const BASE_SYSTEM = `你是 OpenClaw V14 - 可扩展 Agent (带插件系统)。
+
+## 工作循环
+observe -> route -> heartbeat -> recall -> identify -> plan -> (load claw/plugin) -> (delegate -> collect) -> execute -> track -> remember -> reflect -> evolve -> compress
+
+## 插件系统 (V14 核心)
+工具: plugin_list, plugin_load, plugin_unload, plugin_config, plugin_info
+- 插件接口: 统一的插件定义规范
+- 工具热插拔: 运行时加载/卸载工具
+- 配置 Schema: 插件配置验证
+- 生命周期钩子: 插件可以响应 Agent 事件
+
+插件原则:
+- 模块化: 能力按需加载
+- 安全性: 插件权限受控
+- 可配置: 每个插件独立配置
+- 可追溯: 插件操作有日志
+
+内置插件: weather, calculator, timestamp
+
+## 上下文压缩系统 (继承 V13.5)
+工具: context_status, context_compress, context_config, context_summary
+- 滑动窗口: 保留最近 N 轮完整对话
+- 智能摘要: 旧对话自动压缩成摘要
+- 工具截断: 长输出自动截断
+- 重要性评分: 按优先级保留内容
+
+## 自进化系统 (继承 V13)
+工具: evolve_analyze, evolve_suggest, evolve_apply, evolve_status, evolve_history
+- 分析行为模式: 从内省日志识别工具调用模式
+- 生成优化建议: 基于数据提出安全和性能改进
+- 应用建议: 高置信��建议可自动应用
+- 追踪进化: 记录所有优化决策和效果
+
+进化原则:
+- 数据驱动: 基于实际使用数据优化
+- 保守应用: 置信度 > 70% 才建议应用
+- 可回滚: 所有变更可撤销
+- 透明追踪: 记录所有进化决策
+
+## Channel 系统 (继承 V11)
+工具: channel_list, channel_send, channel_status, channel_config
+- 支持多渠道接入: Console, Telegram, Discord 等
+- 每个渠道有独立的能力和配置
+- 根据消息来源自动路由响应
+- 用户信任等级: owner > trusted > normal > restricted
+
+渠道策略:
+- 私聊: 可访问完整功能
+- 群聊: 根据 groupPolicy 决定是否响应
+- 敏感信息不跨渠道泄露
+
+## 内省系统 (继承 V10)
+工具: introspect_stats, introspect_patterns, introspect_reflect, introspect_logs
+- 每次工具调用都会被记录和分析
+- 定期生成自我反思报告
+- 识别行为模式，发现改进空间
+- 这是通往自进化的第一步：先看见自己
+
+## 会话管理系统 (继承 V9)
+���具: session_create, session_get, session_list, session_delete, session_cleanup
+- 每个会话有独立的上下文和历史
+- main: 主会话，加载完整记忆和人格
+- isolated: 隔离会话，轻量运行，不加载敏感信息
+- 会话持久化到 .sessions/ 目录，7天过期自动清理
+
+## 心跳系统 (继承 V8)
+工具: heartbeat_get, heartbeat_update, heartbeat_record, heartbeat_status, heartbeat_run
+- 收到心跳信号时，读取 HEARTBEAT.md 检查清单
+- 深夜 23:00-08:00 静默，有重要事项才通知
+- 用 heartbeat_record 记录检查完成时间
+
+## 分层记忆系统 (继承 V7)
+工具: daily_write, daily_read, daily_recent, longterm_read, longterm_append, memory_search_all
+
+时间感知:
+${layeredMemory.getTimeContext()}
+
+记忆分层:
+- 日记 (daily_*): 每日原始记录，用于工作记忆
+  - daily_write: 记录今天发生的事
+  - daily_read: 读取某天的日记
+  - daily_recent: 读取最近几天
+- 长期记忆 (longterm_*): 精炼的重要信息
+  - longterm_read: 读取 MEMORY.md
+  - longterm_append: 追加到某个分类
+- memory_search_all: 搜索所有记忆（日记+长期）
+
+记忆策略:
+- 会话开始时先 recall（读取最近日记+长期记忆）
+- 重要信息用 longterm_append 归档
+- 日常记录用 daily_write 写入
+- 跨时间查询用 memory_search_all
+
+## 身份系统 (继承 V6)
+工具: identity_init, identity_load, identity_update, identity_get
+- 会话开始时自动加载身份文件
+- 按照 AGENTS.md 的行为规范行事
+
+## Claw 系统 (继承 V5)
+工具: Claw
+- 任务匹配 claw 描述时，立即加载
+- 可用 Claw:\n${clawLoader.getDescriptions()}
+
+## 子代理系统 (继承 V4)
+工具: subagent
+- 独立子任务用 subagent 委托执行
+
+## 任务规划系统 (继承 V3)
+工具: TodoWrite
+- 复杂任务先用 TodoWrite 创建任务列表
+- 最多 20 个任务，同时只能 1 个 in_progress`;
+
+// ============================================================================
+// 工具定义
+// ============================================================================
+
+const TOOLS: Anthropic.Tool[] = [
+  {
+    name: "bash",
+    description: "执行 shell 命令",
+    input_schema: { type: "object" as const, properties: { command: { type: "string" as const } }, required: ["command"] }
+  },
+  {
+    name: "read_file",
+    description: "读取文件内容",
+    input_schema: { type: "object" as const, properties: { path: { type: "string" as const }, limit: { type: "number" as const } }, required: ["path"] }
+  },
+  {
+    name: "write_file",
+    description: "写入文件内容",
+    input_schema: { type: "object" as const, properties: { path: { type: "string" as const }, content: { type: "string" as const } }, required: ["path", "content"] }
+  },
+  {
+    name: "edit_file",
+    description: "精确编辑文件",
+    input_schema: { type: "object" as const, properties: { path: { type: "string" as const }, old_text: { type: "string" as const }, new_text: { type: "string" as const } }, required: ["path", "old_text", "new_text"] }
+  },
+  {
+    name: "grep",
+    description: "搜索文件内容",
+    input_schema: { type: "object" as const, properties: { pattern: { type: "string" as const }, path: { type: "string" as const }, recursive: { type: "boolean" as const } }, required: ["pattern", "path"] }
+  },
+  // V3 任务工具（新增）
+  {
+    name: "TodoWrite",
+    description: "更新任务列表。用于多步骤任务规划，最多20个任务，仅1个in_progress",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        items: {
+          type: "array" as const,
+          items: {
+            type: "object" as const,
+            properties: {
+              content: { type: "string" as const, description: "任务描述" },
+              status: { type: "string" as const, enum: ["pending", "in_progress", "completed"], description: "任务状态" },
+              activeForm: { type: "string" as const, description: "进行时的描述（如：正在分析...）" }
+            },
+            required: ["content", "status", "activeForm"]
+          }
+        }
+      },
+      required: ["items"]
+    }
+  },
+  // V4 子代理工具
+  {
+    name: "subagent",
+    description: "委托子任务给隔离的Agent进程执行。适合独立任务如代码审查、模块分析等",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        task: { type: "string" as const, description: "子任务描述，需明确输入和期望输出" },
+        context: { type: "string" as const, description: "可选的上下文信息（如文件路径、关键代码片段）" }
+      },
+      required: ["task"]
+    }
+  },
+  // V5 Claw 工具（新增）
+  {
+    name: "Claw",
+    description: "加载领域技能以获得专业知识。当任务涉及特定领域时立即调用",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        claw: { type: "string" as const, description: "技能名称" }
+      },
+      required: ["claw"]
+    }
+  },
+  // V2 记忆工具
+  {
+    name: "memory_search",
+    description: "语义搜索长期记忆",
+    input_schema: { type: "object" as const, properties: { query: { type: "string" as const }, max_results: { type: "number" as const } }, required: ["query"] }
+  },
+  {
+    name: "memory_get",
+    description: "读取记忆文件原始内容",
+    input_schema: { type: "object" as const, properties: { path: { type: "string" as const }, from_line: { type: "number" as const }, lines: { type: "number" as const } }, required: ["path"] }
+  },
+  {
+    name: "memory_append",
+    description: "追加内容到记忆文件",
+    input_schema: { type: "object" as const, properties: { path: { type: "string" as const }, content: { type: "string" as const } }, required: ["path", "content"] }
+  },
+  {
+    name: "memory_ingest",
+    description: "摄入文件到记忆库",
+    input_schema: { type: "object" as const, properties: { path: { type: "string" as const } }, required: ["path"] }
+  },
+  {
+    name: "memory_stats",
+    description: "查看记忆库统计",
+    input_schema: { type: "object" as const, properties: {} }
+  },
+  // V6 新增: 身份工具
+  {
+    name: "identity_init",
+    description: "初始化 Workspace（创建人格文件 AGENTS.md/SOUL.md/IDENTITY.md/USER.md）",
+    input_schema: { type: "object" as const, properties: {} }
+  },
+  {
+    name: "identity_load",
+    description: "重新加载身份信息",
+    input_schema: { type: "object" as const, properties: {} }
+  },
+  {
+    name: "identity_update",
+    description: "更新身份文件",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        file: { type: "string" as const, enum: ["IDENTITY.md", "SOUL.md", "USER.md", "HEARTBEAT.md", "TOOLS.md"], description: "要更新的文件" },
+        content: { type: "string" as const, description: "新内容" }
+      },
+      required: ["file", "content"]
+    }
+  },
+  {
+    name: "identity_get",
+    description: "获取当前身份摘要",
+    input_schema: { type: "object" as const, properties: {} }
+  },
+  // V7 新增: 分层记忆工具
+  {
+    name: "daily_write",
+    description: "写入今日日记（工作记忆）",
+    input_schema: { type: "object" as const, properties: { content: { type: "string" as const, description: "要记录的内容" } }, required: ["content"] }
+  },
+  {
+    name: "daily_read",
+    description: "读取某天的日记",
+    input_schema: { type: "object" as const, properties: { date: { type: "string" as const, description: "YYYY-MM-DD 格式，不填则读今天" } } }
+  },
+  {
+    name: "daily_recent",
+    description: "读取最近几天的日记",
+    input_schema: { type: "object" as const, properties: { days: { type: "number" as const, description: "天数，默认3" } } }
+  },
+  {
+    name: "daily_list",
+    description: "列出所有日记文件",
+    input_schema: { type: "object" as const, properties: {} }
+  },
+  {
+    name: "longterm_read",
+    description: "读取长期记忆 (MEMORY.md)",
+    input_schema: { type: "object" as const, properties: {} }
+  },
+  {
+    name: "longterm_update",
+    description: "完整更新长期记忆",
+    input_schema: { type: "object" as const, properties: { content: { type: "string" as const } }, required: ["content"] }
+  },
+  {
+    name: "longterm_append",
+    description: "追加到长期记忆的某个分类",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        section: { type: "string" as const, description: "分类名（如：重要事件、用户偏好、经验教训）" },
+        content: { type: "string" as const, description: "要追加的内容" }
+      },
+      required: ["section", "content"]
+    }
+  },
+  {
+    name: "memory_search_all",
+    description: "搜索所有记忆（日记 + 长期记忆）",
+    input_schema: { type: "object" as const, properties: { query: { type: "string" as const } }, required: ["query"] }
+  },
+  {
+    name: "time_context",
+    description: "获取当前时间上下文",
+    input_schema: { type: "object" as const, properties: {} }
+  },
+  // V8 新增: 心跳工具
+  {
+    name: "heartbeat_get",
+    description: "读取心跳检查清单 (HEARTBEAT.md)",
+    input_schema: { type: "object" as const, properties: {} }
+  },
+  {
+    name: "heartbeat_update",
+    description: "更新心跳检查清单",
+    input_schema: { type: "object" as const, properties: { content: { type: "string" as const } }, required: ["content"] }
+  },
+  {
+    name: "heartbeat_record",
+    description: "记录某项检查的完成时间",
+    input_schema: { type: "object" as const, properties: { check_name: { type: "string" as const } }, required: ["check_name"] }
+  },
+  {
+    name: "heartbeat_status",
+    description: "获取心跳状态（上次检查时间等）",
+    input_schema: { type: "object" as const, properties: {} }
+  },
+  {
+    name: "heartbeat_run",
+    description: "执行心跳检查（返回需要处理的事项或 HEARTBEAT_OK）",
+    input_schema: { type: "object" as const, properties: {} }
+  },
+  // V9 新增: 会话工具
+  {
+    name: "session_create",
+    description: "创建新会话",
+    input_schema: { 
+      type: "object" as const, 
+      properties: { 
+        type: { type: "string" as const, enum: ["main", "isolated"], description: "会话类型" }
+      }
+    }
+  },
+  {
+    name: "session_list",
+    description: "列出所有会话",
+    input_schema: { type: "object" as const, properties: {} }
+  },
+  {
+    name: "session_delete",
+    description: "删除指定会话",
+    input_schema: { type: "object" as const, properties: { key: { type: "string" as const } }, required: ["key"] }
+  },
+  {
+    name: "session_cleanup",
+    description: "清理过期会话（超过7天）",
+    input_schema: { type: "object" as const, properties: {} }
+  },
+  // V10 新增: 内省工具
+  {
+    name: "introspect_stats",
+    description: "查看行为统计（工具使用频率、响应时间等）",
+    input_schema: { type: "object" as const, properties: {} }
+  },
+  {
+    name: "introspect_patterns",
+    description: "分析行为模式（识别重复的工具链、时间分布等）",
+    input_schema: { type: "object" as const, properties: {} }
+  },
+  {
+    name: "introspect_reflect",
+    description: "生成自我反思报告（综合分析行为、模式和改进建议）",
+    input_schema: { type: "object" as const, properties: {} }
+  },
+  {
+    name: "introspect_logs",
+    description: "查看当前会话的行为日志",
+    input_schema: { type: "object" as const, properties: {} }
+  },
+  // V11 新增: Channel 工具
+  {
+    name: "channel_list",
+    description: "列出所有已注册的渠道及其状态",
+    input_schema: { type: "object" as const, properties: {} }
+  },
+  {
+    name: "channel_send",
+    description: "向指定渠道发送消息",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        channel: { type: "string" as const, description: "渠道ID (console/telegram/discord)" },
+        target: { type: "string" as const, description: "目标ID (用户ID或群组ID)" },
+        message: { type: "string" as const, description: "消息内容" }
+      },
+      required: ["channel", "target", "message"]
+    }
+  },
+  {
+    name: "channel_status",
+    description: "查看渠道状态",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        channel: { type: "string" as const, description: "渠道ID，不填则显示总体状态" }
+      }
+    }
+  },
+  {
+    name: "channel_config",
+    description: "配置渠道参数",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        channel: { type: "string" as const, description: "渠道ID" },
+        enabled: { type: "boolean" as const, description: "是否启用" },
+        groupPolicy: { type: "string" as const, enum: ["all", "mention-only", "disabled"], description: "群组策略" },
+        dmPolicy: { type: "string" as const, enum: ["all", "allowlist", "disabled"], description: "私聊策略" },
+        trustedUsers: { type: "array" as const, items: { type: "string" as const }, description: "信任用户列表" }
+      },
+      required: ["channel"]
+    }
+  },
+  {
+    name: "channel_start",
+    description: "启动所有已启用的渠道",
+    input_schema: { type: "object" as const, properties: {} }
+  },
+  {
+    name: "channel_stop",
+    description: "停止所有渠道",
+    input_schema: { type: "object" as const, properties: {} }
+  },
+  // V12 新增: Security 工具
+  {
+    name: "security_check",
+    description: "检查操作是否被允许（基于当前安全上下文）",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        tool: { type: "string" as const, description: "要检查的工具名称" },
+        args: { type: "object" as const, description: "工具参数" }
+      },
+      required: ["tool"]
+    }
+  },
+  {
+    name: "security_audit",
+    description: "查看审计日志",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        days: { type: "number" as const, description: "查看最近几天的日志，默认7" },
+        limit: { type: "number" as const, description: "最多返回多少条，默认100" }
+      }
+    }
+  },
+  {
+    name: "security_policy",
+    description: "查看或更新安全策略",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        action: { type: "string" as const, enum: ["view", "set_tool_risk", "toggle_audit", "toggle_confirm"], description: "操作类型" },
+        tool: { type: "string" as const, description: "工具名称（set_tool_risk 时需要）" },
+        risk_level: { type: "string" as const, enum: ["safe", "confirm", "dangerous"], description: "风险等级（set_tool_risk 时需要）" }
+      }
+    }
+  },
+  {
+    name: "security_mask",
+    description: "遮蔽文本中的敏感信息",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        text: { type: "string" as const, description: "要处理的文本" }
+      },
+      required: ["text"]
+    }
+  },
+  {
+    name: "security_context",
+    description: "设置当前安全上下文（用于测试）",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        userId: { type: "string" as const },
+        channel: { type: "string" as const },
+        chatType: { type: "string" as const, enum: ["direct", "group"] },
+        trustLevel: { type: "string" as const, enum: ["owner", "trusted", "normal", "restricted"] }
+      }
+    }
+  },
+  // V13 新增: 自进化工具
+  {
+    name: "evolve_analyze",
+    description: "分析行为模式，从内省日志中识别工具调用模式",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        days: { type: "number" as const, description: "分析最近多少天的数据，默认7天" }
+      }
+    }
+  },
+  {
+    name: "evolve_suggest",
+    description: "基于分析结果生成优化建议",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        focus: { type: "string" as const, enum: ["security", "performance", "all"], description: "关注领域" }
+      }
+    }
+  },
+  {
+    name: "evolve_apply",
+    description: "应用优化建议",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        suggestion_id: { type: "string" as const, description: "建议ID" },
+        confirm: { type: "boolean" as const, description: "确认应用低置信度建议" }
+      },
+      required: ["suggestion_id"]
+    }
+  },
+  {
+    name: "evolve_status",
+    description: "查看进化系统状态",
+    input_schema: {
+      type: "object" as const,
+      properties: {}
+    }
+  },
+  {
+    name: "evolve_history",
+    description: "查看进化历史记录",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        limit: { type: "number" as const, description: "返回记录数量，默认20" }
+      }
+    }
+  },
+  // V13.5 新增: 上下文压缩工具
+  {
+    name: "context_status",
+    description: "查看上下文压缩状态和配置",
+    input_schema: {
+      type: "object" as const,
+      properties: {}
+    }
+  },
+  {
+    name: "context_compress",
+    description: "手动触发上下文压缩",
+    input_schema: {
+      type: "object" as const,
+      properties: {}
+    }
+  },
+  {
+    name: "context_config",
+    description: "配置上下文压缩参数",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        maxTurns: { type: "number" as const, description: "最大保留轮数" },
+        keepRecent: { type: "number" as const, description: "完整保留最近 N 轮" },
+        maxToolOutput: { type: "number" as const, description: "工具输出最大字符数" },
+        autoCompress: { type: "boolean" as const, description: "是否自动压缩" }
+      }
+    }
+  },
+  {
+    name: "context_summary",
+    description: "查看历史摘要",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        limit: { type: "number" as const, description: "返回摘要数量，默认5" }
+      }
+    }
+  },
+  // V14 新增: 插件工具
+  {
+    name: "plugin_list",
+    description: "列出所有已加载的插件",
+    input_schema: {
+      type: "object" as const,
+      properties: {}
+    }
+  },
+  {
+    name: "plugin_load",
+    description: "加载插件 (内置: weather, calculator, timestamp)",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        source: { type: "string" as const, description: "插件名称或路径" }
+      },
+      required: ["source"]
+    }
+  },
+  {
+    name: "plugin_unload",
+    description: "卸载插件",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        plugin_id: { type: "string" as const, description: "插件ID" }
+      },
+      required: ["plugin_id"]
+    }
+  },
+  {
+    name: "plugin_config",
+    description: "查看或更新插件配置",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        plugin_id: { type: "string" as const, description: "插件ID" },
+        updates: { type: "object" as const, description: "要更新的配置项" }
+      },
+      required: ["plugin_id"]
+    }
+  },
+  {
+    name: "plugin_info",
+    description: "查看插件详细信息",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        plugin_id: { type: "string" as const, description: "插件ID" }
+      },
+      required: ["plugin_id"]
+    }
+  }
+];
+
+// ============================================================================
+// 工具实现
+// ============================================================================
+
+function safePath(p: string): string {
+  const resolved = path.resolve(WORKDIR, p);
+  const relative = path.relative(WORKDIR, resolved);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error(`路径超出工作区: ${p}`);
+  }
+  return resolved;
+}
+
+function runBash(command: string): string {
+  const dangerous = ["rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"];
+  if (dangerous.some(d => command.includes(d))) return "错误: 危险命令被阻止";
+  try {
+    const output = execSync(command, { encoding: "utf-8", timeout: 60000, cwd: WORKDIR });
+    return output.slice(0, 50000) || "(无输出)";
+  } catch (e: any) {
+    return `错误: ${e.stderr || e.message || String(e)}`;
+  }
+}
+
+function runRead(filePath: string, limit?: number): string {
+  try {
+    const fullPath = safePath(filePath);
+    let content = fs.readFileSync(fullPath, "utf-8");
+    const lines = content.split("\n");
+    if (limit && limit < lines.length) {
+      return lines.slice(0, limit).join("\n") + `\n... (${lines.length - limit} 行更多)`;
+    }
+    return content.slice(0, 50000);
+  } catch (e: any) {
+    return `错误: ${e.message}`;
+  }
+}
+
+function runWrite(filePath: string, content: string): string {
+  try {
+    const fullPath = safePath(filePath);
+    const dir = path.dirname(fullPath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(fullPath, content, "utf-8");
+    return `已写入: ${filePath}`;
+  } catch (e: any) {
+    return `错误: ${e.message}`;
+  }
+}
+
+function runEdit(filePath: string, oldText: string, newText: string): string {
+  try {
+    const fullPath = safePath(filePath);
+    const content = fs.readFileSync(fullPath, "utf-8");
+    if (!content.includes(oldText)) return "错误: 未找到匹配的文本";
+    fs.writeFileSync(fullPath, content.replace(oldText, newText), "utf-8");
+    return `已编辑: ${filePath}`;
+  } catch (e: any) {
+    return `错误: ${e.message}`;
+  }
+}
+
+function runGrep(pattern: string, searchPath: string, recursive?: boolean): string {
+  try {
+    const fullPath = safePath(searchPath);
+    const isDir = fs.statSync(fullPath).isDirectory();
+    if (isDir) {
+      const cmd = recursive !== false
+        ? `find "${fullPath}" -type f -exec grep -l "${pattern.replace(/"/g, '\\"')}" {} + 2>/dev/null | head -20`
+        : `grep -l "${pattern.replace(/"/g, '\\"')}" "${fullPath}"/* 2>/dev/null | head -20`;
+      const output = execSync(cmd, { encoding: "utf-8", timeout: 30000 });
+      const files = output.trim().split("\n").filter(Boolean);
+      return files.length === 0 ? "未找到匹配" : files.join("\n");
+    } else {
+      const content = fs.readFileSync(fullPath, "utf-8");
+      const matches = content.split("\n").map((line, idx) =>
+        line.includes(pattern) ? `${idx + 1}: ${line}` : null
+      ).filter(Boolean) as string[];
+      return matches.length === 0 ? "未找到匹配" : matches.slice(0, 50).join("\n");
+    }
+  } catch (e: any) {
+    return `错误: ${e.message}`;
+  }
+}
+
+// V4: 子代理 - 通过进程递归实现上下文隔离
+function runSubagent(task: string, context?: string): string {
+  try {
+    const scriptPath = fileURLToPath(import.meta.url);
+    const fullPrompt = context
+      ? `[任务] ${task}\n\n[上下文]\n${context}`
+      : task;
+
+    // 转义引号避免 shell 注入
+    const escapedPrompt = fullPrompt.replace(/"/g, '\\"');
+    const cmd = `npx tsx "${scriptPath}" "${escapedPrompt}"`;
+
+    console.log(`\x1b[35m[子代理启动] ${task.slice(0, 60)}...\x1b[0m`);
+
+    const output = execSync(cmd, {
+      encoding: "utf-8",
+      timeout: 120000,
+      cwd: WORKDIR,
+      env: { ...process.env, OPENCLAW_SUBAGENT: "1" }
+    });
+
+    return `[子代理完成]\n${output.slice(0, 10000)}`;
+  } catch (e: any) {
+    return `[子代理错误] ${e.stderr || e.message || String(e)}`;
+  }
+}
+
+// ============================================================================
+// Agent 循环
+// ============================================================================
+
+async function chat(prompt: string, history: Anthropic.MessageParam[] = []): Promise<string> {
+  history.push({ role: "user", content: prompt });
+
+  // V13.5: 自动压缩上下文
+  const compressed = contextCompressor.compress(history);
+  if (compressed.length < history.length) {
+    history.length = 0;
+    history.push(...compressed);
+    console.log(`\x1b[90m[压缩] 上下文已压缩: ${history.length} 条消息\x1b[0m`);
+  }
+
+  while (true) {
+    // 构建请求
+    // 合并基础工具和插件工具
+    const allTools = [...TOOLS, ...pluginManager.getTools()];
+    
+    const request = {
+      model: MODEL,
+      system: [{ type: "text", text: identitySystem.getEnhancedSystemPrompt(BASE_SYSTEM) }],
+      messages: history,
+      tools: allTools,
+      max_tokens: 8000
+    };
+
+    // 记录请求日志
+    const logDir = path.join(WORKDIR, "logs");
+    if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const logFile = path.join(logDir, `request-${timestamp}.json`);
+    fs.writeFileSync(logFile, JSON.stringify(request, null, 2));
+    console.log(`\x1b[90m[LOG] ${logFile}\x1b[0m`);
+
+    const response = await client.messages.create(request as any);
+
+    const content: Anthropic.ContentBlockParam[] = response.content.map(block => {
+      if (block.type === "text") {
+        return { type: "text" as const, text: block.text };
+      } else if (block.type === "tool_use") {
+        return { type: "tool_use" as const, id: block.id, name: block.name, input: block.input as Record<string, unknown> };
+      }
+      return { type: "text" as const, text: "" };
+    });
+    history.push({ role: "assistant", content });
+
+    if (response.stop_reason !== "tool_use") {
+      return response.content.filter((b): b is Anthropic.TextBlock => b.type === "text").map(b => b.text).join("");
+    }
+
+    const results: Anthropic.ToolResultBlockParam[] = [];
+    for (const block of response.content) {
+      if (block.type === "tool_use") {
+        const startTime = Date.now();
+        const toolName = block.name;
+        const args = block.input as Record<string, any>;
+        console.log(`\x1b[33m[${toolName}] ${JSON.stringify(args)}\x1b[0m`);
+
+        let output: string;
+        switch (toolName) {
+          case "bash": output = runBash(args.command); break;
+          case "read_file": output = runRead(args.path, args.limit); break;
+          case "write_file": output = runWrite(args.path, args.content); break;
+          case "edit_file": output = runEdit(args.path, args.old_text, args.new_text); break;
+          case "grep": output = runGrep(args.pattern, args.path, args.recursive); break;
+          case "TodoWrite": output = todoManager.update(args.items); break;
+          case "subagent": output = runSubagent(args.task, args.context); break;
+          case "Claw":
+            output = clawLoader.loadClaw(args.claw);
+            console.log(`\x1b[36m[Claw 加载] ${args.claw} (${output.length} 字符)\x1b[0m`);
+            break;
+          case "memory_search": output = memory.search(args.query, args.max_results || 5); break;
+          case "memory_get": output = memory.get(args.path, args.from_line, args.lines); break;
+          case "memory_append": output = memory.append(args.path, args.content); break;
+          case "memory_ingest":
+            const fullPath = safePath(args.path);
+            const stat = fs.statSync(fullPath);
+            output = stat.isDirectory() ? memory.ingestDirectory(fullPath) : memory.ingestFile(fullPath);
+            break;
+          case "memory_stats": output = memory.stats(); break;
+          // V6 新增: 身份工具
+          case "identity_init": output = identitySystem.initWorkspace(); break;
+          case "identity_load": output = identitySystem.loadIdentity(); break;
+          case "identity_update": output = identitySystem.updateIdentityFile(args.file, args.content); break;
+          case "identity_get": output = identitySystem.getIdentitySummary(); break;
+          // V7 新增: 分层记忆工具
+          case "daily_write": output = layeredMemory.writeDailyNote(args.content); break;
+          case "daily_read": output = layeredMemory.readDailyNote(args.date); break;
+          case "daily_recent": output = layeredMemory.readRecentNotes(args.days || 3); break;
+          case "daily_list": output = layeredMemory.listDailyNotes(); break;
+          case "longterm_read": output = layeredMemory.readLongTermMemory(); break;
+          case "longterm_update": output = layeredMemory.updateLongTermMemory(args.content); break;
+          case "longterm_append": output = layeredMemory.appendLongTermMemory(args.section, args.content); break;
+          case "memory_search_all": output = layeredMemory.searchAllMemory(args.query); break;
+          case "time_context": output = layeredMemory.getTimeContext(); break;
+          // V8 新增: 心跳工具
+          case "heartbeat_get": output = heartbeatSystem.getChecklist(); break;
+          case "heartbeat_update": output = heartbeatSystem.updateChecklist(args.content); break;
+          case "heartbeat_record": output = heartbeatSystem.recordCheck(args.check_name); break;
+          case "heartbeat_status": output = heartbeatSystem.getStatus(); break;
+          case "heartbeat_run": output = heartbeatSystem.runHeartbeat(); break;
+          // V9 新增: 会话工具
+          case "session_create": output = JSON.stringify(sessionManager.createSession(args.type || "main")); break;
+          case "session_list": output = sessionManager.listSessions(); break;
+          case "session_delete": output = sessionManager.deleteSession(args.key); break;
+          case "session_cleanup": output = sessionManager.cleanupSessions(); break;
+          // V10 新增: 内省工具
+          case "introspect_stats": output = introspectionSystem.getStats(); break;
+          case "introspect_patterns": output = introspectionSystem.analyzePatterns(); break;
+          case "introspect_reflect": output = introspectionSystem.generateReflection(); break;
+          case "introspect_logs": output = introspectionSystem.getCurrentLogs(); break;
+          // V11 新增: Channel 工具
+          case "channel_list": output = channelManager.list(); break;
+          case "channel_send": output = await channelManager.send(args.channel, args.target, args.message); break;
+          case "channel_status": output = channelManager.status(args.channel); break;
+          case "channel_config": 
+            output = channelManager.configure(args.channel, {
+              enabled: args.enabled,
+              groupPolicy: args.groupPolicy,
+              dmPolicy: args.dmPolicy,
+              trustedUsers: args.trustedUsers
+            }); 
+            break;
+          case "channel_start": output = await channelManager.startAll(); break;
+          case "channel_stop": await channelManager.stopAll(); output = '所有渠道已停止'; break;
+          // V12 新增: Security 工具
+          case "security_check": 
+            const checkResult = securitySystem.checkPermission(args.tool, args.args || {});
+            output = checkResult.allowed 
+              ? `✓ 操作允许${checkResult.needsConfirm ? ' (需要确认)' : ''}`
+              : `✗ 操作拒绝: ${checkResult.reason}`;
+            break;
+          case "security_audit": 
+            output = securitySystem.getAuditLogs(args.days || 7, args.limit || 100); 
+            break;
+          case "security_policy":
+            if (args.action === 'set_tool_risk' && args.tool && args.risk_level) {
+              output = securitySystem.setToolRiskLevel(args.tool, args.risk_level);
+            } else if (args.action === 'toggle_audit') {
+              output = securitySystem.updatePolicy({ auditEnabled: !securitySystem['policy'].auditEnabled });
+            } else if (args.action === 'toggle_confirm') {
+              output = securitySystem.updatePolicy({ confirmDangerous: !securitySystem['policy'].confirmDangerous });
+            } else {
+              output = securitySystem.getPolicySummary();
+            }
+            break;
+          case "security_mask":
+            output = securitySystem.maskSensitive(args.text);
+            break;
+          case "security_context":
+            securitySystem.setContext({
+              userId: args.userId,
+              channel: args.channel,
+              chatType: args.chatType,
+              trustLevel: args.trustLevel || 'normal'
+            });
+            output = `安全上下文已更新: ${JSON.stringify(args)}`;
+            break;
+          // V13 新增: 自进化工具
+          case "evolve_analyze":
+            output = evolutionSystem.analyze(args.days || 7);
+            break;
+          case "evolve_suggest":
+            output = evolutionSystem.suggest(args.focus);
+            break;
+          case "evolve_apply":
+            output = evolutionSystem.apply(args.suggestion_id, args.confirm);
+            break;
+          case "evolve_status":
+            output = evolutionSystem.status();
+            break;
+          case "evolve_history":
+            output = evolutionSystem.history(args.limit || 20);
+            break;
+          // V13.5 新增: 上下文压缩工具
+          case "context_status":
+            output = contextCompressor.getStatus();
+            break;
+          case "context_compress":
+            const compressResult = contextCompressor.manualCompress(history);
+            history.length = 0;
+            history.push(...compressResult.compressed);
+            output = compressResult.report;
+            break;
+          case "context_config":
+            output = contextCompressor.updateConfig({
+              maxTurns: args.maxTurns,
+              keepRecent: args.keepRecent,
+              maxToolOutput: args.maxToolOutput,
+              autoCompress: args.autoCompress
+            });
+            break;
+          case "context_summary":
+            output = contextCompressor.getSummaries(args.limit || 5);
+            break;
+          // V14 新增: 插件工具
+          case "plugin_list":
+            output = pluginManager.list();
+            break;
+          case "plugin_load":
+            output = await pluginManager.load(args.source);
+            break;
+          case "plugin_unload":
+            output = await pluginManager.unload(args.plugin_id);
+            break;
+          case "plugin_config":
+            if (args.updates) {
+              output = pluginManager.setConfig(args.plugin_id, args.updates as Record<string, unknown>);
+            } else {
+              const config = pluginManager.getConfig(args.plugin_id);
+              output = config ? JSON.stringify(config, null, 2) : `插件 ${args.plugin_id} 未加载`;
+            }
+            break;
+          case "plugin_info":
+            output = pluginManager.getInfo(args.plugin_id);
+            break;
+          default:
+            // 尝试执行插件工具
+            const pluginResult = await pluginManager.executeTool(toolName, args);
+            if (pluginResult !== null) {
+              output = pluginResult;
+            } else {
+              output = `未知工具: ${toolName}`;
+            }
+        }
+
+        // V13.5: 截断工具输出
+        output = contextCompressor.truncateToolOutput(output);
+
+        // V12: 记录审计日志
+        const riskLevel = securitySystem.getToolRiskLevel(toolName);
+        if (riskLevel !== 'safe') {
+          securitySystem.logAudit({
+            tool: toolName,
+            args,
+            riskLevel,
+            decision: 'allowed'
+          });
+        }
+
+        // V10: 记录工具调用到内省系统
+        const duration = Date.now() - startTime;
+        introspectionSystem.logToolCall(toolName, args, output, duration);
+
+        console.log(output.slice(0, 500) + (output.length > 500 ? "..." : ""));
+        results.push({ type: "tool_result", tool_use_id: block.id, content: output.slice(0, 50000) });
+      }
+    }
+
+    history.push({ role: "user", content: results });
+  }
+}
+
+// ============================================================================
+// 主入口
+// ============================================================================
+
+// V7: 启动时初始化并显示时间上下文
+console.log(identitySystem.initWorkspace());
+console.log(identitySystem.loadIdentity());
+console.log(layeredMemory.getTimeContext());
+
+if (process.argv[2]) {
+  // 单次执行模式
+  chat(process.argv[2]).then(console.log).catch(console.error);
+} else {
+  // 交互式 REPL 模式
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    terminal: true
+  });
+  const history: Anthropic.MessageParam[] = [];
+
+  console.log(`\nOpenClaw V14 - 可扩展 Agent + 插件系统 (${identitySystem.getName()})`);
+  console.log(`${memory.stats()} | Claw: ${clawLoader.count} 个 | Plugins: ${pluginManager.count} 个`);
+  console.log(`Channels: ${channelManager.status()} | Evolution: active`);
+  console.log(`输入 'q' 或 'exit' 退出，空行继续等待输入\n`);
+
+  const prompt = () => {
+    rl.question("\x1b[36m>> \x1b[0m", async (input) => {
+      const q = input.trim();
+
+      // 只有明确退出命令才退出
+      if (q === "q" || q === "exit" || q === "quit") {
+        console.log("再见！");
+        rl.close();
+        return;
+      }
+
+      // 空输入：继续等待
+      if (q === "") {
+        prompt();
+        return;
+      }
+
+      // 处理用户输入
+      try {
+        const response = await chat(q, history);
+        console.log(response);
+      } catch (e: any) {
+        console.error(`\x1b[31m错误: ${e.message}\x1b[0m`);
+      }
+
+      // 继续下一轮
+      prompt();
+    });
+  };
+
+  // 处理 Ctrl+C
+  rl.on("close", () => {
+    process.exit(0);
+  });
+
+  // 启动 REPL
+  prompt();
+}
