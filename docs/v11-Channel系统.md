@@ -204,5 +204,66 @@ channelManager.register(new MyChannel());
 
 ---
 
+## V11 模块化版本 (v11-agent/)
+
+V11 还提供了模块化实现版本，位于 `v11-agent/` 目录。
+
+### 目录结构
+
+```
+v11-agent/
+├── index.ts          # 主入口
+��── core/types.ts     # 共享类型
+├── memory/           # 三层记忆系统
+├── session/          # 会话管理
+├── channel/          # 渠道管理
+├── identity/         # 身份系统
+├── introspect/       # 内省追踪
+├── claw/             # 技能加载
+├── tools/            # 工具定义和执行
+└── utils/dedup.ts    # 消息去重模块
+```
+
+### 新增功能
+
+#### Token 统计
+
+实时追踪 API 调用的 token 使用量：
+
+```bash
+# 控制台命令
+/stats    # 查看 token 统计
+/tokens   # 同上
+
+# 退出时自动显示统计
+q
+```
+
+统计内容：
+- 输入 tokens
+- 输出 tokens
+- 总计 tokens
+- 请求数
+- 平均速率 (tokens/s)
+- 会话时长
+
+#### 环境变量配置
+
+| 变量 | 默认值 | 描述 |
+|------|--------|------|
+| `MAX_TOKENS` | 8192 | API max_tokens |
+| `BASH_TIMEOUT` | 30000 | bash 命令超时 (ms) |
+
+### 代码质量改进 (2026-02-10)
+
+1. **清理死代码**: 删除未使用的 `queue.ts` 和 `channel/router.ts`
+2. **统一去重**: 创建 `utils/dedup.ts` 模块，消除重复逻辑
+3. **异步 IO**: 所有文件操作改为异步，避免阻塞事件循环
+4. **类型安全**: 消除所有 `as any` 类型断言
+5. **可配置化**: 硬编码值改为环境变量配置
+
+---
+
 *Created: 2026-02-10*
+*Updated: 2026-02-10*
 *Lines: ~2324*

@@ -110,6 +110,9 @@ export interface Channel {
 // 身份系统类型
 // ============================================================================
 
+// 身份文件的有效键名
+export type IdentityFileKey = 'agents' | 'soul' | 'user' | 'memory' | 'heartbeat' | 'tools';
+
 export interface IdentityFiles {
   agents?: string;
   soul?: string;
@@ -117,6 +120,8 @@ export interface IdentityFiles {
   memory?: string;
   heartbeat?: string;
   tools?: string;
+  // 索引签名允许动态键访问
+  [key: string]: string | undefined;
 }
 
 // ============================================================================
@@ -160,13 +165,15 @@ export interface LoadedClaw {
 // 工具系统类型
 // ============================================================================
 
+// 与 Anthropic.Tool 兼容的工具定义
 export interface ToolDefinition {
   name: string;
   description: string;
   input_schema: {
     type: "object";
-    properties: Record<string, any>;
+    properties?: Record<string, unknown> | null;
     required?: string[];
+    [k: string]: unknown;
   };
 }
 
