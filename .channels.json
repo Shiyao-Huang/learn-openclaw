@@ -9,6 +9,9 @@
     "enabled": false
   },
   "feishu": {
-    "enabled": true
+    "enabled": true,
+    "groupPolicy": "all",
+    "dmPolicy": "all",
+    "trustedUsers": []
   }
 }

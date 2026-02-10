@@ -1,20 +1,28 @@
 {
-  "totalCalls": 81,
+  "totalCalls": 535,
   "toolUsage": {
     "channel_list": 2,
     "security_policy": 1,
-    "read_file": 9,
-    "grep": 1,
-    "bash": 44,
-    "write_file": 3,
-    "TodoWrite": 7,
-    "edit_file": 7,
+    "read_file": 58,
+    "grep": 5,
+    "bash": 354,
+    "write_file": 35,
+    "TodoWrite": 26,
+    "edit_file": 14,
     "channel_status": 3,
     "channel_config": 2,
     "channel_start": 1,
-    "channel_send": 1
+    "channel_send": 1,
+    "daily_read": 2,
+    "longterm_read": 7,
+    "Claw": 3,
+    "longterm_append": 6,
+    "daily_write": 8,
+    "daily_recent": 5,
+    "memory_search_all": 1,
+    "identity_get": 1
   },
-  "avgDuration": 1089.1111111111113,
+  "avgDuration": 1986.6972199829731,
   "patterns": [],
   "lastReflection": 0
 }

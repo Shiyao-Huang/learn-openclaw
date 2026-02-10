@@ -5,6 +5,8 @@
   "description": "OpenClaw 渐进学习 - V0 极简实现",
   "scripts": {
     "v0": "tsx v0_openclaw_agent.ts",
+    "v11": "tsx v11-agent/index.ts",
+    "start": "tsx v11-agent/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"

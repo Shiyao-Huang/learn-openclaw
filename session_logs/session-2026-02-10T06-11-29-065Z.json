@@ -1,0 +1,26 @@
+{
+  "sessionId": "2026-02-10T06-11-29-065Z",
+  "tokenStats": {
+    "inputTokens": 3215,
+    "outputTokens": 207,
+    "totalTokens": 3422,
+    "requestCount": 1,
+    "toolCallCount": 0,
+    "sessionStart": "2026-02-10T06:11:29.066Z",
+    "lastUpdate": "2026-02-10T06:11:40.455Z"
+  },
+  "conversationCount": 1,
+  "conversations": [
+    {
+      "channel": "console",
+      "chatId": "cli",
+      "inputTokens": 3215,
+      "outputTokens": 207,
+      "toolCalls": [],
+      "startTime": "2026-02-10T06:11:29.274Z",
+      "userInput": "--help",
+      "responsePreview": "好的 Morty，这是我能做的事情：\n\n## 🛠️ 核心能力\n\n### 文件操作\n- `bash` - 执行 shell 命令\n- `read_file` / `write_file` / `edit_file` - 读写编辑文件\n- `grep` - 搜索文件内容\n\n### 记忆系统\n- `daily_write` / `daily_read` / `daily_recent` - 日记管理\n",
+      "endTime": "2026-02-10T06:11:40.455Z"
+    }
+  ]
+}

@@ -1,0 +1,60 @@
+{
+  "sessionId": "2026-02-10T07-29-37-798Z",
+  "tokenStats": {
+    "inputTokens": 38349,
+    "outputTokens": 226,
+    "totalTokens": 38575,
+    "requestCount": 12,
+    "toolCallCount": 9,
+    "sessionStart": "2026-02-10T07:29:37.799Z",
+    "lastUpdate": "2026-02-10T07:54:40.087Z"
+  },
+  "conversationCount": 3,
+  "conversations": [
+    {
+      "channel": "console",
+      "chatId": "repl",
+      "inputTokens": 6047,
+      "outputTokens": 24,
+      "toolCalls": [
+        "bash"
+      ],
+      "startTime": "2026-02-10T07:29:45.009Z",
+      "userInput": "复制到当前文件夹 ~/clawd/docs/vibe-coder-summary.md",
+      "responsePreview": "搞定，`vibe-coder-summary.md` 已复制到当前文件夹。",
+      "endTime": "2026-02-10T07:29:53.353Z"
+    },
+    {
+      "channel": "console",
+      "chatId": "repl",
+      "inputTokens": 18914,
+      "outputTokens": 131,
+      "toolCalls": [
+        "bash",
+        "bash",
+        "bash"
+      ],
+      "startTime": "2026-02-10T07:53:27.352Z",
+      "userInput": "现在 git 推一下？？",
+      "responsePreview": "没有配置远程仓库，所以只能本地 commit。要推到 GitHub 的话，需要先添加 remote：\n\n```bash\ngit remote add origin git@github.com:你的用户名/clawd.git\ngit push -u origin main\n```\n\n本地已经 commit 好了（13 个文件，886 行），随时可以推。你有 GitHub 仓库地址吗？",
+      "endTime": "2026-02-10T07:53:57.452Z"
+    },
+    {
+      "channel": "console",
+      "chatId": "repl",
+      "inputTokens": 38349,
+      "outputTokens": 226,
+      "toolCalls": [
+        "bash",
+        "bash",
+        "bash",
+        "bash",
+        "bash"
+      ],
+      "startTime": "2026-02-10T07:54:08.212Z",
+      "userInput": "'/Users/swmt/work/deepwork/learn-openclaw' 自带",
+      "responsePreview": "远程有新的提交，需要先 pull。要我 `git pull --rebase` 然后再 push 吗？",
+      "endTime": "2026-02-10T07:54:40.087Z"
+    }
+  ]
+}
