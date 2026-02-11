@@ -32,8 +32,10 @@
 | V13.5 | `v13.5-agent.ts` | 3619 | 59 | Context compression |
 | V14 | `v14-agent.ts` | 4311 | 64 | Plugin system |
 | V15 | `v15-agent.ts` | 4945 | 64 | Multi-model routing |
-| V16 | `v16-agent/` | 1153 | 70 | DAG workflow engine |
-| **Total** | | **33162** | | |
+| V16 | `v16-agent/` | 16328 | 70 | DAG workflow engine |
+| V17 | `v17-agent/` | 16757 | 72 | External integration |
+| **V18** | `v18-agent/` | ~18000 | 82 | **Team collaboration** |
+| **Total** | | **~35000** | | |
 
 Notes:
 - V5.5-V9 all expose the `Skill` tool with `skill` input.
@@ -88,6 +90,8 @@ npx tsx v0-agent.ts
 - [V14 Plugin](./docs/v14-插件系统.md)
 - [V15 Multi-model](./docs/v15-多模型协作.md)
 - [V16 Workflow](./docs/v16-工作流引擎.md)
+- [V17 External](./docs/v17-外部集成.md)
+- [V18 Collaboration](./docs/v18-团队协作.md)
 - [Evolution Overview](./docs/EVOLUTION.md)
 
 ### Diff guides
@@ -110,6 +114,8 @@ npx tsx v0-agent.ts
 - [V13.5 -> V14](./docs/evolution/v13.5-to-v14.md)
 - [V14 -> V15](./docs/evolution/v14-to-v15.md)
 - [V15 -> V16](./docs/evolution/v15-to-v16.md)
+- [V16 -> V17](./docs/evolution/v16-to-v17.md)
+- [V17 -> V18](./docs/evolution/v17-to-v18.md)
 
 ---
 
