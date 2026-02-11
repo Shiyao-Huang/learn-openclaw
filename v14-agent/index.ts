@@ -26,7 +26,7 @@ import { SessionManager } from "./session/manager.js";
 import { ChannelManager } from "./channel/index.js";
 import { IdentitySystem } from "./identity/system.js";
 import { IntrospectionTracker } from "./introspect/tracker.js";
-import { ClawLoader } from "./claw/loader.js";
+import { SkillLoader } from "./skills/index.js";
 import { tools as baseTools, createExecutor } from "./tools/index.js";
 import { MessageDeduplicator } from "./utils/dedup.js";
 import { createSessionLogger } from "./utils/logger.js";
@@ -96,7 +96,7 @@ const sessionManager = new SessionManager(config.workDir);
 const channelManager = new ChannelManager(config.workDir);
 const identitySystem = new IdentitySystem(config.identityDir, config.idSampleDir);
 const introspection = new IntrospectionTracker(config.workDir);
-const clawLoader = new ClawLoader(config.clawDir);
+const skillLoader = new SkillLoader(config.skillsDir);
 
 // V12 安全系统
 const securitySystem = new SecuritySystem(config.workDir);
@@ -124,7 +124,7 @@ const baseExecutor = createExecutor({
   channelManager,
   identitySystem,
   introspection,
-  clawLoader,
+  skillLoader,
 });
 
 // 获取动态工具列表（包含插件工具）
@@ -224,7 +224,7 @@ function buildSystemPrompt(): string {
   const identity = identitySystem.getSummary();
   if (identity) parts.push(identity);
   
-  const clawContent = clawLoader.getLoadedContent();
+  const clawContent = skillLoader.getLoadedContent();
   if (clawContent) parts.push(clawContent);
   
   const now = new Date();
@@ -259,7 +259,7 @@ ${plugins.map(p => `- ${p.name}: ${p.tools.join(', ') || '无工具'}`).join('\n
 - 进化系统：使用 evolution_analyze 分析行为
 - 插件系统：使用 plugin_load 加载插件 (内置: weather, calculator, timestamp)`);
 
-  const clawList = clawLoader.list();
+  const clawList = skillLoader.list();
   if (clawList !== "无可用技能") {
     parts.push(`\n## 可用技能\n${clawList}`);
   }
@@ -287,7 +287,7 @@ async function chat(
   // V14 新增：触发 message_received 钩子
   await pluginManager.triggerHook('message_received', { input, channel, chatId, userId });
 
-  clawLoader.autoLoad(input);
+  skillLoader.autoLoad(input);
 
   const systemPrompt = buildSystemPrompt();
   const messages: Anthropic.MessageParam[] = [...history, { role: "user", content: input }];

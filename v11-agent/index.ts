@@ -24,7 +24,7 @@ import { SessionManager } from "./session/manager.js";
 import { ChannelManager } from "./channel/index.js";
 import { IdentitySystem } from "./identity/system.js";
 import { IntrospectionTracker } from "./introspect/tracker.js";
-import { ClawLoader } from "./claw/loader.js";
+import { SkillLoader } from "./skills/index.js";
 import { tools, createExecutor } from "./tools/index.js";
 import { MessageDeduplicator } from "./utils/dedup.js";
 import { createSessionLogger, SessionLogger } from "./utils/logger.js";
@@ -50,7 +50,7 @@ const config = {
   maxTokens: parseInt(process.env.MAX_TOKENS || "8192", 10),
   bashTimeout: parseInt(process.env.BASH_TIMEOUT || "30000", 10),
   workDir: process.env.WORK_DIR || rootDir,
-  clawDir: process.env.CLAW_DIR || path.join(rootDir, "claws"),
+  skillsDir: process.env.SKILLS_DIR || path.join(rootDir, "skills"),
   identityDir: process.env.IDENTITY_DIR || rootDir,
   idSampleDir: process.env.ID_SAMPLE_DIR || path.join(rootDir, ".ID.sample"),
 };
@@ -75,7 +75,7 @@ const sessionManager = new SessionManager(config.workDir);
 const channelManager = new ChannelManager(config.workDir);
 const identitySystem = new IdentitySystem(config.identityDir, config.idSampleDir);
 const introspection = new IntrospectionTracker(config.workDir);
-const clawLoader = new ClawLoader(config.clawDir);
+const skillLoader = new SkillLoader(config.skillsDir);
 
 // 加载身份
 identitySystem.load();
@@ -89,7 +89,7 @@ const executeTool = createExecutor({
   channelManager,
   identitySystem,
   introspection,
-  clawLoader,
+  skillLoader,
 });
 
 // ============================================================================

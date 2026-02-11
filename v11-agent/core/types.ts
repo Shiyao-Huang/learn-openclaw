@@ -13,7 +13,7 @@ export interface AgentConfig {
   baseURL?: string;
   model: string;
   workDir: string;
-  clawDir: string;
+  skillsDir: string;
   identityDir: string;
 }
 
@@ -144,10 +144,10 @@ export interface IntrospectionStats {
 }
 
 // ============================================================================
-// Claw 系统类型
+// Skill 系统类型（从 V7 提取并模块化）
 // ============================================================================
 
-export interface ClawMetadata {
+export interface SkillMetadata {
   name: string;
   description: string;
   version?: string;
@@ -155,10 +155,10 @@ export interface ClawMetadata {
   triggers?: string[];
 }
 
-export interface LoadedClaw {
+export interface LoadedSkill {
   name: string;
   content: string;
-  metadata: ClawMetadata;
+  metadata: SkillMetadata;
 }
 
 // ============================================================================

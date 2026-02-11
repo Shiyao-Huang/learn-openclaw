@@ -1,23 +1,78 @@
 # Dependencies
 node_modules/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
 
-# Environment
+# Build output
+dist/
+build/
+*.js
+*.js.map
+*.d.ts
+!scripts/*.js
+
+# Environment variables
 .env
 .env.local
+.env.*.local
 
 # Logs
 logs/
 *.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
-# Memory/Cache
-.memory/
+# Runtime data
 memory/
-
-# OS
-.DS_Store
+!memory/.gitkeep
+audit/
+!audit/.gitkeep
+security/
+!security/.gitkeep
+temp/
+tmp/
+.sessions/
+.introspection/
+.evolution/
 
 # IDE
 .idea/
 .vscode/
-nanobot/
-.introspection/behavior_*.jsonl
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Archive (keep structure but ignore content)
+archive/*/
+!archive/.gitkeep
+
+# Session logs
+session_logs/
+
+# IPC and PID files
+.openclaw.ipc
+.openclaw.pid
+
+# Local config
+config.local.json
+channels.json
+.channels.json
+
+# Backup files
+*.bak
+*.backup
+~*
+
+# Talk files (generated)
+talk*
+!talk*.md

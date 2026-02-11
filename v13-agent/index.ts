@@ -25,7 +25,7 @@ import { SessionManager } from "./session/manager.js";
 import { ChannelManager } from "./channel/index.js";
 import { IdentitySystem } from "./identity/system.js";
 import { IntrospectionTracker } from "./introspect/tracker.js";
-import { ClawLoader } from "./claw/loader.js";
+import { SkillLoader } from "./skills/index.js";
 import { tools as baseTools, createExecutor } from "./tools/index.js";
 import { MessageDeduplicator } from "./utils/dedup.js";
 import { createSessionLogger } from "./utils/logger.js";

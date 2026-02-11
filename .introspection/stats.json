@@ -1,21 +1,21 @@
 {
-  "totalCalls": 267,
+  "totalCalls": 343,
   "toolUsage": {
     "daily_recent": 5,
-    "bash": 152,
-    "read_file": 66,
+    "bash": 173,
+    "read_file": 79,
     "memory_search_all": 2,
-    "TodoWrite": 16,
-    "grep": 5,
+    "TodoWrite": 23,
+    "grep": 13,
     "longterm_read": 3,
-    "write_file": 10,
+    "write_file": 25,
     "Claw": 1,
     "identity_load": 1,
-    "edit_file": 4,
+    "edit_file": 16,
     "daily_read": 1,
     "introspect_stats": 1
   },
-  "avgDuration": 2605.047880830135,
+  "avgDuration": 1822.0589313412047,
   "patterns": [],
   "lastReflection": 0
 }

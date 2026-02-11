@@ -26,7 +26,7 @@ import { SessionManager } from "./session/manager.js";
 import { ChannelManager } from "./channel/index.js";
 import { IdentitySystem } from "./identity/system.js";
 import { IntrospectionTracker } from "./introspect/tracker.js";
-import { ClawLoader } from "./claw/loader.js";
+import { SkillLoader } from "./claw/loader.js";
 import { tools as baseTools, createExecutor } from "./tools/index.js";
 import { MessageDeduplicator } from "./utils/dedup.js";
 import { createSessionLogger } from "./utils/logger.js";
@@ -106,7 +106,7 @@ const sessionManager = new SessionManager(config.workDir);
 const channelManager = new ChannelManager(config.workDir);
 const identitySystem = new IdentitySystem(config.identityDir, config.idSampleDir);
 const introspection = new IntrospectionTracker(config.workDir);
-const clawLoader = new ClawLoader(config.clawDir);
+const skillLoader = new SkillLoader(config.clawDir);
 
 // V12 安全系统
 const securitySystem = new SecuritySystem(config.workDir);
@@ -138,7 +138,7 @@ const baseExecutor = createExecutor({
   channelManager,
   identitySystem,
   introspection,
-  clawLoader,
+  skillLoader,
 });
 
 // 获取动态工具列表
@@ -219,7 +219,7 @@ function buildSystemPrompt(selectedModel?: string): string {
   const identity = identitySystem.getSummary();
   if (identity) parts.push(identity);
   
-  const clawContent = clawLoader.getLoadedContent();
+  const clawContent = skillLoader.getLoadedContent();
   if (clawContent) parts.push(clawContent);
   
   const now = new Date();
@@ -254,7 +254,7 @@ ${plugins.map(p => `- ${p.name}`).join('\n')}`);
 - V14 插件: 热插拔工具
 - V15 多模型: 智能路由、成本优化`);
 
-  const clawList = clawLoader.list();
+  const clawList = skillLoader.list();
   if (clawList !== "无可用技能") {
     parts.push(`\n## 可用技能\n${clawList}`);
   }
@@ -281,7 +281,7 @@ async function chat(
   });
 
   await pluginManager.triggerHook('message_received', { input, channel, chatId, userId });
-  clawLoader.autoLoad(input);
+  skillLoader.autoLoad(input);
 
   // V15 新增：智能模型选择
   let selectedModel = config.defaultModel;

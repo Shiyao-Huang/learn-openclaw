@@ -1,36 +1,36 @@
 /**
- * v11-agent/claw/loader.ts - Claw 技能加载器
+ * v11-agent/skill/loader.ts - Skill 技能加载器
  */
 
 import * as fs from "fs";
 import * as fsp from "fs/promises";
 import * as path from "path";
-import type { ClawMetadata, LoadedClaw } from "../core/types.js";
+import type { SkillMetadata, LoadedSkill } from "../core/types.js";
 
-export class ClawLoader {
-  private clawDir: string;
-  private loaded: Map<string, LoadedClaw> = new Map();
-  private available: Map<string, ClawMetadata> = new Map();
+export class SkillLoader {
+  private skillDir: string;
+  private loaded: Map<string, LoadedSkill> = new Map();
+  private available: Map<string, SkillMetadata> = new Map();
 
-  constructor(clawDir: string) {
-    this.clawDir = clawDir;
+  constructor(skillDir: string) {
+    this.skillDir = skillDir;
     this.scan();
   }
 
-  // 扫描可用的 Claw（同步，用于构造函数）
+  // 扫描可用的 Skill（同步，用于构造函数）
   scan(): void {
     this.available.clear();
 
-    if (!fs.existsSync(this.clawDir)) {
+    if (!fs.existsSync(this.skillDir)) {
       return;
     }
 
-    const dirs = fs.readdirSync(this.clawDir, { withFileTypes: true })
+    const dirs = fs.readdirSync(this.skillDir, { withFileTypes: true })
       .filter(d => d.isDirectory())
       .map(d => d.name);
 
     for (const dir of dirs) {
-      const skillPath = path.join(this.clawDir, dir, "SKILL.md");
+      const skillPath = path.join(this.skillDir, dir, "SKILL.md");
       if (fs.existsSync(skillPath)) {
         const content = fs.readFileSync(skillPath, "utf-8");
         const metadata = this.parseMetadata(content, dir);
@@ -39,19 +39,19 @@ export class ClawLoader {
     }
   }
 
-  // 异步扫描可用的 Claw
+  // 异步扫描可用的 Skill
   async scanAsync(): Promise<void> {
     this.available.clear();
 
-    if (!fs.existsSync(this.clawDir)) {
+    if (!fs.existsSync(this.skillDir)) {
       return;
     }
 
-    const entries = await fsp.readdir(this.clawDir, { withFileTypes: true });
+    const entries = await fsp.readdir(this.skillDir, { withFileTypes: true });
     const dirs = entries.filter(d => d.isDirectory()).map(d => d.name);
 
     for (const dir of dirs) {
-      const skillPath = path.join(this.clawDir, dir, "SKILL.md");
+      const skillPath = path.join(this.skillDir, dir, "SKILL.md");
       if (fs.existsSync(skillPath)) {
         const content = await fsp.readFile(skillPath, "utf-8");
         const metadata = this.parseMetadata(content, dir);
@@ -61,8 +61,8 @@ export class ClawLoader {
   }
 
   // 解析 SKILL.md 中的元数据
-  private parseMetadata(content: string, name: string): ClawMetadata {
-    const metadata: ClawMetadata = { name, description: "" };
+  private parseMetadata(content: string, name: string): SkillMetadata {
+    const metadata: SkillMetadata = { name, description: "" };
 
     // 提取描述（第一个段落）
     const descMatch = content.match(/^#[^\n]+\n+([^\n#]+)/);
@@ -85,62 +85,62 @@ export class ClawLoader {
     return metadata;
   }
 
-  // 加载 Claw（同步，用于 autoLoad）
+  // 加载 Skill（同步，用于 autoLoad）
   load(name: string): string {
     if (this.loaded.has(name)) {
-      return `Claw "${name}" 已加载`;
+      return `Skill "${name}" 已加载`;
     }
 
-    const skillPath = path.join(this.clawDir, name, "SKILL.md");
+    const skillPath = path.join(this.skillDir, name, "SKILL.md");
     if (!fs.existsSync(skillPath)) {
-      return `错误: Claw "${name}" 不存在`;
+      return `错误: Skill "${name}" 不存在`;
     }
 
     const content = fs.readFileSync(skillPath, "utf-8");
     const metadata = this.available.get(name) || this.parseMetadata(content, name);
 
     this.loaded.set(name, { name, content, metadata });
-    return `已加载 Claw: ${name}\n${metadata.description}`;
+    return `已加载 Skill: ${name}\n${metadata.description}`;
   }
 
-  // 异步加载 Claw
+  // 异步加载 Skill
   async loadAsync(name: string): Promise<string> {
     if (this.loaded.has(name)) {
-      return `Claw "${name}" 已加载`;
+      return `Skill "${name}" 已加载`;
     }
 
-    const skillPath = path.join(this.clawDir, name, "SKILL.md");
+    const skillPath = path.join(this.skillDir, name, "SKILL.md");
     if (!fs.existsSync(skillPath)) {
-      return `错误: Claw "${name}" 不存在`;
+      return `错误: Skill "${name}" 不存在`;
     }
 
     const content = await fsp.readFile(skillPath, "utf-8");
     const metadata = this.available.get(name) || this.parseMetadata(content, name);
 
     this.loaded.set(name, { name, content, metadata });
-    return `已加载 Claw: ${name}\n${metadata.description}`;
+    return `已加载 Skill: ${name}\n${metadata.description}`;
   }
 
-  // 卸载 Claw
+  // 卸载 Skill
   unload(name: string): string {
     if (this.loaded.delete(name)) {
-      return `已卸载 Claw: ${name}`;
+      return `已卸载 Skill: ${name}`;
     }
-    return `Claw "${name}" 未加载`;
+    return `Skill "${name}" 未加载`;
   }
 
-  // 获取已加载的 Claw 内容（用于 system prompt）
+  // 获取已加载的 Skill 内容（用于 system prompt）
   getLoadedContent(): string {
     if (this.loaded.size === 0) return "";
 
     const parts: string[] = ["# 已加载的技能\n"];
-    for (const [name, claw] of this.loaded) {
-      parts.push(`## ${name}\n${claw.content}\n`);
+    for (const [name, skill] of this.loaded) {
+      parts.push(`## ${name}\n${skill.content}\n`);
     }
     return parts.join("\n");
   }
 
-  // 列出可用的 Claw
+  // 列出可用的 Skill
   list(): string {
     if (this.available.size === 0) {
       return "无可用技能";
@@ -154,12 +154,12 @@ export class ClawLoader {
     return lines.join("\n");
   }
 
-  // 获取可用 Claw 数量
+  // 获取可用 Skill 数量
   get count(): number {
     return this.available.size;
   }
 
-  // 获取已加载 Claw 数量
+  // 获取已加载 Skill 数量
   get loadedCount(): number {
     return this.loaded.size;
   }
@@ -190,4 +190,4 @@ export class ClawLoader {
   }
 }
 
-export default ClawLoader;
+export default SkillLoader;
