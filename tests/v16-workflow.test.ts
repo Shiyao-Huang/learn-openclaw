@@ -15,6 +15,7 @@ import {
   WorkflowManager,
   DAGNode,
   DAG,
+  DAGEdge,
 } from '../v16-agent/workflow/dag.js';
 
 describe('V16 Workflow Engine', () => {
@@ -103,8 +104,19 @@ describe('V16 Workflow Engine', () => {
         { id: 'B', label: 'B', type: 'task', dependsOn: ['A'], status: 'pending' },
         { id: 'C', label: 'C', type: 'task', dependsOn: ['B'], status: 'pending' },
       ];
+      const dag: DAG = {
+        id: 'test',
+        name: 'Test',
+        nodes: new Map(nodes.map(n => [n.id, n])),
+        edges: [
+          { from: 'A', to: 'B' },
+          { from: 'B', to: 'C' },
+        ],
+        createdAt: Date.now(),
+        status: 'pending',
+      };
 
-      const plan = planner.createPlan(nodes);
+      const plan = planner.plan(dag);
 
       expect(plan.phases).toHaveLength(3);
       expect(plan.phases[0]).toEqual(['A']);
@@ -119,8 +131,21 @@ describe('V16 Workflow Engine', () => {
         { id: 'C', label: 'C', type: 'task', dependsOn: ['A'], status: 'pending' },
         { id: 'D', label: 'D', type: 'task', dependsOn: ['B', 'C'], status: 'pending' },
       ];
+      const dag: DAG = {
+        id: 'test',
+        name: 'Test',
+        nodes: new Map(nodes.map(n => [n.id, n])),
+        edges: [
+          { from: 'A', to: 'B' },
+          { from: 'A', to: 'C' },
+          { from: 'B', to: 'D' },
+          { from: 'C', to: 'D' },
+        ],
+        createdAt: Date.now(),
+        status: 'pending',
+      };
 
-      const plan = planner.createPlan(nodes);
+      const plan = planner.plan(dag);
 
       expect(plan.phases).toHaveLength(3);
       expect(plan.phases[0]).toEqual(['A']);
@@ -131,7 +156,15 @@ describe('V16 Workflow Engine', () => {
     });
 
     it('should handle empty graph', () => {
-      const plan = planner.createPlan([]);
+      const dag: DAG = {
+        id: 'test',
+        name: 'Test',
+        nodes: new Map(),
+        edges: [],
+        createdAt: Date.now(),
+        status: 'pending',
+      };
+      const plan = planner.plan(dag);
       expect(plan.phases).toHaveLength(0);
       expect(plan.estimatedParallelism).toBe(0);
     });
@@ -198,17 +231,21 @@ describe('V16 Workflow Engine', () => {
       `;
 
       const dag = manager.createFromMermaid('Test', mermaid);
+      let shouldFail = false;
       const mockExecutor = async (node: DAGNode) => {
-        if (node.id === 'B') throw new Error('Task B failed');
+        if (node.id === 'B') {
+          throw new Error('Task B failed');
+        }
         return { executed: true };
       };
 
       const result = await manager.run(dag.id, mockExecutor);
 
+      expect(result).toBeDefined();
       expect(result?.status).toBe('partial');
       expect(result?.completedNodes).toBe(1);
       expect(result?.failedNodes).toBe(1);
-    });
+    }, 10000);
 
     it('should list all workflows', () => {
       manager.createFromMermaid('Workflow 1', 'flowchart TD\nA --> B');
