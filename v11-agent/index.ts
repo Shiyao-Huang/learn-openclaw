@@ -377,50 +377,161 @@ async function main() {
     console.log(`\nOpenClaw V11 - 模块化 Agent (${identitySystem.getName()})`);
     console.log(`${memoryManager.stats()} | ${sessionManager.stats()} | Claw: ${clawLoader.count} 个`);
     console.log(`控制台和飞书会话已分离，各自独立上下文`);
-    console.log(`输入 'q' 退出 | '/stats' Token | '/todo' 任务\n`);
+    console.log(`输入 'q' 退出 | '/stats' Token | '/todo' 任务 | '/multi' 多行模式`);
+    console.log(`提示: 粘贴多行内容时不会自动触发，按回车发送\n`);
 
-    const prompt = () => {
-      rl.question("\x1b[36m>> \x1b[0m", async (input) => {
-        const q = input.trim();
-
-        if (q === "q" || q === "exit" || q === "quit") {
-          console.log(logger.getGoodbyeReport());
-          await logger.dispose();
-          await channelManager.stopAll();
-          rl.close();
-          return;
+    // 多行输入模式状态
+    let multilineBuffer: string[] = [];
+    let isMultilineMode = false;
+    let isProcessing = false;
+    
+    // 处理输入的核心函数
+    async function handleInput(rawInput: string): Promise<boolean> {
+      const input = rawInput.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+      const trimmed = input.trim();
+      
+      // 多行模式：收集输入直到空行
+      if (isMultilineMode) {
+        if (trimmed === "" && multilineBuffer.length > 0) {
+          // 空行结束多行模式
+          const fullInput = multilineBuffer.join("\n").trim();
+          multilineBuffer = [];
+          isMultilineMode = false;
+          
+          if (fullInput) {
+            isProcessing = true;
+            const response = await processInput(fullInput, 'console', consoleHistory, 'console', 'repl');
+            console.log(response);
+            isProcessing = false;
+          }
+          return true; // 继续提示
         }
-
-        if (q === "/stats" || q === "/tokens") {
-          console.log(logger.getTokenStatsReport());
-          prompt();
-          return;
+        
+        multilineBuffer.push(input);
+        return true; // 继续多行输入
+      }
+      
+      // 检测是否开启多行模式（以 ``` 开头）
+      if (trimmed.startsWith("```")) {
+        isMultilineMode = true;
+        multilineBuffer = [];
+        const firstLine = trimmed.slice(3).trim();
+        if (firstLine) {
+          multilineBuffer.push(firstLine);
         }
+        console.log("\x1b[33m[多行模式] 继续输入，空行结束\x1b[0m");
+        return true;
+      }
+      
+      // 命令处理
+      if (trimmed === "q" || trimmed === "exit" || trimmed === "quit") {
+        console.log(logger.getGoodbyeReport());
+        await logger.dispose();
+        await channelManager.stopAll();
+        rl.close();
+        return false;
+      }
 
-        if (q === "/todo" || q === "/todos") {
-          logger.logTodoList();
-          prompt();
-          return;
+      if (trimmed === "/stats" || trimmed === "/tokens") {
+        console.log(logger.getTokenStatsReport());
+        return true;
+      }
+
+      if (trimmed === "/todo" || trimmed === "/todos") {
+        logger.logTodoList();
+        return true;
+      }
+      
+      if (trimmed === "/multi" || trimmed === "/m") {
+        isMultilineMode = true;
+        multilineBuffer = [];
+        console.log("\x1b[33m[多行模式] 输入你的内容，空行结束\x1b[0m");
+        return true;
+      }
+
+      if (trimmed === "") {
+        return true;
+      }
+
+      // 普通单行输入
+      isProcessing = true;
+      const response = await processInput(trimmed, 'console', consoleHistory, 'console', 'repl');
+      console.log(response);
+      isProcessing = false;
+      return true;
+    }
+    
+    // 显示提示符
+    function showPrompt() {
+      if (isMultilineMode) {
+        process.stdout.write("\x1b[36m... \x1b[0m");
+      } else {
+        process.stdout.write("\x1b[36m>> \x1b[0m");
+      }
+    }
+    
+    // 使用 readline 的 'line' 事件，但添加一个防抖机制
+    // 来检测粘贴的多行内容（快速连续的多行输入）
+    let lineBuffer: string[] = [];
+    let lineTimeout: NodeJS.Timeout | null = null;
+    const PASTE_DELAY = 50; // 50ms 内连续输入视为粘贴
+    
+    rl.on('line', async (line: string) => {
+      // 如果正在处理，直接添加到缓冲区
+      if (isProcessing) {
+        lineBuffer.push(line);
+        return;
+      }
+      
+      // 多行模式下，直接处理
+      if (isMultilineMode) {
+        const shouldContinue = await handleInput(line);
+        if (shouldContinue) {
+          showPrompt();
         }
-
-        if (q === "") {
-          prompt();
-          return;
+        return;
+      }
+      
+      // 添加到缓冲区
+      lineBuffer.push(line);
+      
+      // 清除之前的定时器
+      if (lineTimeout) {
+        clearTimeout(lineTimeout);
+      }
+      
+      // 设置新的定时器
+      lineTimeout = setTimeout(async () => {
+        // 检查是否是多行粘贴
+        if (lineBuffer.length > 1) {
+          // 多行粘贴，合并处理
+          const fullInput = lineBuffer.join("\n").trim();
+          lineBuffer = [];
+          
+          if (fullInput) {
+            isProcessing = true;
+            const response = await processInput(fullInput, 'console', consoleHistory, 'console', 'repl');
+            console.log(response);
+            isProcessing = false;
+          }
+        } else if (lineBuffer.length === 1) {
+          // 单行输入
+          const input = lineBuffer[0];
+          lineBuffer = [];
+          const shouldContinue = await handleInput(input);
+          if (!shouldContinue) return;
         }
-
-        // 控制台使用独立的 consoleHistory
-        const response = await processInput(q, 'console', consoleHistory, 'console', 'repl');
-        console.log(response);
-
-        prompt();
-      });
-    };
+        
+        showPrompt();
+      }, PASTE_DELAY);
+    });
     
     rl.on("close", () => {
       process.exit(0);
     });
     
-    prompt();
+    // 初始提示
+    showPrompt();
   }
 }
 

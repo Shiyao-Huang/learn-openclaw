@@ -1,0 +1,25 @@
+{
+  "sessionId": "2026-02-11T05-05-08-999Z",
+  "tokenStats": {
+    "inputTokens": 0,
+    "outputTokens": 0,
+    "totalTokens": 0,
+    "requestCount": 0,
+    "toolCallCount": 0,
+    "sessionStart": "2026-02-11T05:05:09.002Z",
+    "lastUpdate": "2026-02-11T05:05:09.002Z"
+  },
+  "conversationCount": 1,
+  "conversations": [
+    {
+      "channel": "console",
+      "chatId": "repl",
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "toolCalls": [],
+      "startTime": "2026-02-11T05:05:48.213Z",
+      "userInput": "你好",
+      "responsePreview": ""
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "sessionId": "2026-02-11T05-46-21-734Z",
+  "tokenStats": {
+    "inputTokens": 0,
+    "outputTokens": 0,
+    "totalTokens": 0,
+    "requestCount": 0,
+    "toolCallCount": 0,
+    "sessionStart": "2026-02-11T05:46:21.735Z",
+    "lastUpdate": "2026-02-11T05:46:21.735Z"
+  },
+  "conversationCount": 0,
+  "conversations": []
+}
