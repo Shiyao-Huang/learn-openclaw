@@ -88,7 +88,7 @@ const sessionManager = new SessionManager(config.workDir);
 const channelManager = new ChannelManager(config.workDir);
 const identitySystem = new IdentitySystem(config.identityDir, config.idSampleDir);
 const introspection = new IntrospectionTracker(config.workDir);
-const clawLoader = new ClawLoader(config.clawDir);
+const skillLoader = new SkillLoader(config.clawDir);
 
 // V12 安全系统
 const securitySystem = new SecuritySystem(config.workDir);
@@ -119,7 +119,7 @@ const baseExecutor = createExecutor({
   channelManager,
   identitySystem,
   introspection,
-  clawLoader,
+  skillLoader,
 });
 
 // 带安全检查的执行器 (V12) + 进化追踪 (V13)
@@ -193,8 +193,8 @@ function buildSystemPrompt(): string {
   const identity = identitySystem.getSummary();
   if (identity) parts.push(identity);
   
-  const clawContent = clawLoader.getLoadedContent();
-  if (clawContent) parts.push(clawContent);
+  const skillContent = skillLoader.getLoadedContent();
+  if (skillContent) parts.push(skillContent);
   
   const now = new Date();
   parts.push(`当前时间: ${now.toLocaleString("zh-CN", { 
@@ -230,9 +230,9 @@ ${patterns.slice(0, 3).map(p => `- ${p.sequence.join(' → ')}`).join('\n')}`);
 ## 任务规划
 - 复杂任务先用 TodoWrite 创建任务列表`);
 
-  const clawList = clawLoader.list();
-  if (clawList !== "无可用技能") {
-    parts.push(`\n## 可用技能\n${clawList}`);
+  const skillList = skillLoader.list();
+  if (skillList !== "无可用技能") {
+    parts.push(`\n## 可用技能\n${skillList}`);
   }
   
   return parts.join("\n\n");
@@ -258,7 +258,7 @@ async function chat(
   });
 
   const convIndex = logger.startConversation(channel, chatId, input);
-  clawLoader.autoLoad(input);
+  skillLoader.autoLoad(input);
 
   const systemPrompt = buildSystemPrompt();
   const messages: Anthropic.MessageParam[] = [

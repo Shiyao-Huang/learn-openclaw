@@ -82,7 +82,7 @@ const sessionManager = new SessionManager(config.workDir);
 const channelManager = new ChannelManager(config.workDir);
 const identitySystem = new IdentitySystem(config.identityDir, config.idSampleDir);
 const introspection = new IntrospectionTracker(config.workDir);
-const clawLoader = new ClawLoader(config.clawDir);
+const skillLoader = new SkillLoader(config.clawDir);
 
 // V12 新增：安全系统
 const securitySystem = new SecuritySystem(config.workDir);
@@ -105,7 +105,7 @@ const baseExecutor = createExecutor({
   channelManager,
   identitySystem,
   introspection,
-  clawLoader,
+  skillLoader,
 });
 
 // 带安全检查的执行器
@@ -170,10 +170,10 @@ function buildSystemPrompt(): string {
     parts.push(identity);
   }
   
-  // 已加载的 Claw
-  const clawContent = clawLoader.getLoadedContent();
-  if (clawContent) {
-    parts.push(clawContent);
+  // 已加载的 Skills
+  const skillContent = skillLoader.getLoadedContent();
+  if (skillContent) {
+    parts.push(skillContent);
   }
   
   // 时间上下文
@@ -208,10 +208,10 @@ function buildSystemPrompt(): string {
 - 复杂任务先用 TodoWrite 创建任务列表
 - 每完成一步更新任务状态`);
 
-  // 可用 Claw
-  const clawList = clawLoader.list();
-  if (clawList !== "无可用技能") {
-    parts.push(`\n## 可用技能\n${clawList}`);
+  // 可用 Skills
+  const skillList = skillLoader.list();
+  if (skillList !== "无可用技能") {
+    parts.push(`\n## 可用技能\n${skillList}`);
   }
   
   return parts.join("\n\n");
@@ -240,8 +240,8 @@ async function chat(
   // 开始对话日志
   const convIndex = logger.startConversation(channel, chatId, input);
 
-  // 自动加载相关 Claw
-  clawLoader.autoLoad(input);
+  // 自动加载相关 Skills
+  skillLoader.autoLoad(input);
 
   const systemPrompt = buildSystemPrompt();
   const messages: Anthropic.MessageParam[] = [

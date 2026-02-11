@@ -219,8 +219,8 @@ function buildSystemPrompt(selectedModel?: string): string {
   const identity = identitySystem.getSummary();
   if (identity) parts.push(identity);
   
-  const clawContent = skillLoader.getLoadedContent();
-  if (clawContent) parts.push(clawContent);
+  const skillContent = skillLoader.getLoadedContent();
+  if (skillContent) parts.push(skillContent);
   
   const now = new Date();
   parts.push(`当前时间: ${now.toLocaleString("zh-CN", { 
@@ -254,9 +254,9 @@ ${plugins.map(p => `- ${p.name}`).join('\n')}`);
 - V14 插件: 热插拔工具
 - V15 多模型: 智能路由、成本优化`);
 
-  const clawList = skillLoader.list();
-  if (clawList !== "无可用技能") {
-    parts.push(`\n## 可用技能\n${clawList}`);
+  const skillList = skillLoader.list();
+  if (skillList !== "无可用技能") {
+    parts.push(`\n## 可用技能\n${skillList}`);
   }
   
   return parts.join("\n\n");

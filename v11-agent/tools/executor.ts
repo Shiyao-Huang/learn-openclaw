@@ -11,7 +11,7 @@ import type { SessionManager } from "../session/manager.js";
 import type { ChannelManager } from "../channel/index.js";
 import type { IdentitySystem } from "../identity/system.js";
 import type { IntrospectionTracker } from "../introspect/tracker.js";
-import type { ClawLoader } from "../claw/loader.js";
+import type { SkillLoader } from "../skills/index.js";
 
 export interface ExecutorContext {
   workDir: string;
@@ -21,7 +21,7 @@ export interface ExecutorContext {
   channelManager: ChannelManager;
   identitySystem: IdentitySystem;
   introspection: IntrospectionTracker;
-  clawLoader: ClawLoader;
+  skillLoader: SkillLoader;
 }
 
 let currentTodos: any[] = [];
@@ -35,7 +35,7 @@ export function createExecutor(ctx: ExecutorContext) {
     channelManager,
     identitySystem,
     introspection,
-    clawLoader,
+    skillLoader,
   } = ctx;
 
   return async function executeTool(name: string, args: Record<string, any>): Promise<string> {
@@ -226,9 +226,9 @@ export function createExecutor(ctx: ExecutorContext) {
           break;
         }
 
-        // Claw 工具
-        case "Claw":
-          result = clawLoader.load(args.claw);
+        // Skill 工具
+        case "Skill":
+          result = skillLoader.load(args.skill);
           break;
 
         // 任务规划
@@ -249,7 +249,11 @@ export function createExecutor(ctx: ExecutorContext) {
             } else {
               pending++;
             }
-            lines.push(`${i + 1}. [${icon}] ${item.content}`);
+            // 如果有 activeForm，显示为前缀
+            const displayText = item.activeForm 
+              ? `${item.activeForm} - ${item.content}`
+              : item.content;
+            lines.push(`${i + 1}. [${icon}] ${displayText}`);
           }
 
           lines.push(`\n总计: ${args.items.length} | 待办: ${pending} | 进行中: ${inProgress} | 完成: ${completed}`);

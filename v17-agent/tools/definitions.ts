@@ -230,14 +230,14 @@ export const tools: ToolDefinition[] = [
     input_schema: { type: "object", properties: {} }
   },
   
-  // Claw 工具
+  // Skill 工具
   {
-    name: "Claw",
+    name: "Skill",
     description: "加载领域技能",
     input_schema: {
       type: "object",
-      properties: { claw: { type: "string" } },
-      required: ["claw"]
+      properties: { skill: { type: "string" } },
+      required: ["skill"]
     }
   },
   

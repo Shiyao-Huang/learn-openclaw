@@ -11,7 +11,7 @@ import type { SessionManager } from "../session/manager.js";
 import type { ChannelManager } from "../channel/index.js";
 import type { IdentitySystem } from "../identity/system.js";
 import type { IntrospectionTracker } from "../introspect/tracker.js";
-import type { ClawLoader } from "../claw/loader.js";
+import type { SkillLoader } from "../skills/index.js";
 import { webFetch, webSearch } from "../external/web.js";
 
 export interface ExecutorContext {
@@ -22,7 +22,7 @@ export interface ExecutorContext {
   channelManager: ChannelManager;
   identitySystem: IdentitySystem;
   introspection: IntrospectionTracker;
-  clawLoader: ClawLoader;
+  skillLoader: SkillLoader;
   braveApiKey?: string;
 }
 
@@ -37,7 +37,7 @@ export function createExecutor(ctx: ExecutorContext) {
     channelManager,
     identitySystem,
     introspection,
-    clawLoader,
+    skillLoader,
   } = ctx;
 
   return async function executeTool(name: string, args: Record<string, any>): Promise<string> {
@@ -228,9 +228,9 @@ export function createExecutor(ctx: ExecutorContext) {
           break;
         }
 
-        // Claw 工具
-        case "Claw":
-          result = clawLoader.load(args.claw);
+        // Skill 工具
+        case "Skill":
+          result = skillLoader.load(args.skill);
           break;
 
         // 任务规划

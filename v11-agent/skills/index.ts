@@ -45,15 +45,15 @@ export class SkillLoader {
   async scanAsync(): Promise<void> {
     this.available.clear();
 
-    if (!fs.existsSync(this.skillDir)) {
+    if (!fs.existsSync(this.skillsDir)) {
       return;
     }
 
-    const entries = await fsp.readdir(this.skillDir, { withFileTypes: true });
+    const entries = await fsp.readdir(this.skillsDir, { withFileTypes: true });
     const dirs = entries.filter(d => d.isDirectory()).map(d => d.name);
 
     for (const dir of dirs) {
-      const skillPath = path.join(this.skillDir, dir, "SKILL.md");
+      const skillPath = path.join(this.skillsDir, dir, "SKILL.md");
       if (fs.existsSync(skillPath)) {
         const content = await fsp.readFile(skillPath, "utf-8");
         const metadata = this.parseMetadata(content, dir);
@@ -93,7 +93,7 @@ export class SkillLoader {
       return `Skill "${name}" 已加载`;
     }
 
-    const skillPath = path.join(this.skillDir, name, "SKILL.md");
+    const skillPath = path.join(this.skillsDir, name, "SKILL.md");
     if (!fs.existsSync(skillPath)) {
       return `错误: Skill "${name}" 不存在`;
     }
@@ -111,7 +111,7 @@ export class SkillLoader {
       return `Skill "${name}" 已加载`;
     }
 
-    const skillPath = path.join(this.skillDir, name, "SKILL.md");
+    const skillPath = path.join(this.skillsDir, name, "SKILL.md");
     if (!fs.existsSync(skillPath)) {
       return `错误: Skill "${name}" 不存在`;
     }

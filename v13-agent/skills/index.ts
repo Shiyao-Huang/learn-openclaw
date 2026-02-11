@@ -8,12 +8,12 @@ import * as path from "path";
 import type { SkillMetadata, LoadedSkill } from "../core/types.js";
 
 export class SkillLoader {
-  private skillDir: string;
+  private skillsDir: string;
   private loaded: Map<string, LoadedSkill> = new Map();
   private available: Map<string, SkillMetadata> = new Map();
 
-  constructor(skillDir: string) {
-    this.skillDir = skillDir;
+  constructor(skillsDir: string) {
+    this.skillsDir = skillsDir;
     this.scan();
   }
 
@@ -21,16 +21,16 @@ export class SkillLoader {
   scan(): void {
     this.available.clear();
 
-    if (!fs.existsSync(this.skillDir)) {
+    if (!fs.existsSync(this.skillsDir)) {
       return;
     }
 
-    const dirs = fs.readdirSync(this.skillDir, { withFileTypes: true })
+    const dirs = fs.readdirSync(this.skillsDir, { withFileTypes: true })
       .filter(d => d.isDirectory())
       .map(d => d.name);
 
     for (const dir of dirs) {
-      const skillPath = path.join(this.skillDir, dir, "SKILL.md");
+      const skillPath = path.join(this.skillsDir, dir, "SKILL.md");
       if (fs.existsSync(skillPath)) {
         const content = fs.readFileSync(skillPath, "utf-8");
         const metadata = this.parseMetadata(content, dir);
@@ -43,15 +43,15 @@ export class SkillLoader {
   async scanAsync(): Promise<void> {
     this.available.clear();
 
-    if (!fs.existsSync(this.skillDir)) {
+    if (!fs.existsSync(this.skillsDir)) {
       return;
     }
 
-    const entries = await fsp.readdir(this.skillDir, { withFileTypes: true });
+    const entries = await fsp.readdir(this.skillsDir, { withFileTypes: true });
     const dirs = entries.filter(d => d.isDirectory()).map(d => d.name);
 
     for (const dir of dirs) {
-      const skillPath = path.join(this.skillDir, dir, "SKILL.md");
+      const skillPath = path.join(this.skillsDir, dir, "SKILL.md");
       if (fs.existsSync(skillPath)) {
         const content = await fsp.readFile(skillPath, "utf-8");
         const metadata = this.parseMetadata(content, dir);
@@ -91,7 +91,7 @@ export class SkillLoader {
       return `Skill "${name}" 已加载`;
     }
 
-    const skillPath = path.join(this.skillDir, name, "SKILL.md");
+    const skillPath = path.join(this.skillsDir, name, "SKILL.md");
     if (!fs.existsSync(skillPath)) {
       return `错误: Skill "${name}" 不存在`;
     }
@@ -109,7 +109,7 @@ export class SkillLoader {
       return `Skill "${name}" 已加载`;
     }
 
-    const skillPath = path.join(this.skillDir, name, "SKILL.md");
+    const skillPath = path.join(this.skillsDir, name, "SKILL.md");
     if (!fs.existsSync(skillPath)) {
       return `错误: Skill "${name}" 不存在`;
     }

@@ -224,8 +224,8 @@ function buildSystemPrompt(): string {
   const identity = identitySystem.getSummary();
   if (identity) parts.push(identity);
   
-  const clawContent = skillLoader.getLoadedContent();
-  if (clawContent) parts.push(clawContent);
+  const skillContent = skillLoader.getLoadedContent();
+  if (skillContent) parts.push(skillContent);
   
   const now = new Date();
   parts.push(`当前时间: ${now.toLocaleString("zh-CN", { 
@@ -259,9 +259,9 @@ ${plugins.map(p => `- ${p.name}: ${p.tools.join(', ') || '无工具'}`).join('\n
 - 进化系统：使用 evolution_analyze 分析行为
 - 插件系统：使用 plugin_load 加载插件 (内置: weather, calculator, timestamp)`);
 
-  const clawList = skillLoader.list();
-  if (clawList !== "无可用技能") {
-    parts.push(`\n## 可用技能\n${clawList}`);
+  const skillList = skillLoader.list();
+  if (skillList !== "无可用技能") {
+    parts.push(`\n## 可用技能\n${skillList}`);
   }
   
   return parts.join("\n\n");

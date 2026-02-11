@@ -105,10 +105,10 @@ function buildSystemPrompt(): string {
     parts.push(identity);
   }
   
-  // 已加载的 Claw
-  const clawContent = clawLoader.getLoadedContent();
-  if (clawContent) {
-    parts.push(clawContent);
+  // 已加载的 Skills
+  const skillContent = skillLoader.getLoadedContent();
+  if (skillContent) {
+    parts.push(skillContent);
   }
   
   // 时间上下文
@@ -136,10 +136,10 @@ function buildSystemPrompt(): string {
 - 每完成一步更新任务状态 (pending → in_progress → completed)
 - 任务列表帮助你追踪进度，也让用户看到你的计划`);
 
-  // 可用 Claw
-  const clawList = clawLoader.list();
-  if (clawList !== "无可用技能") {
-    parts.push(`\n## 可用技能\n${clawList}`);
+  // 可用 Skills
+  const skillList = skillLoader.list();
+  if (skillList !== "无可用技能") {
+    parts.push(`\n## 可用技能\n${skillList}`);
   }
   
   return parts.join("\n\n");
@@ -158,8 +158,8 @@ async function chat(
   // 开始对话日志
   const convIndex = logger.startConversation(channel, chatId, input);
 
-  // 自动加载相关 Claw
-  clawLoader.autoLoad(input);
+  // 自动加载相关 Skills
+  skillLoader.autoLoad(input);
 
   const systemPrompt = buildSystemPrompt();
   const messages: Anthropic.MessageParam[] = [
@@ -375,7 +375,7 @@ async function main() {
     });
 
     console.log(`\nOpenClaw V11 - 模块化 Agent (${identitySystem.getName()})`);
-    console.log(`${memoryManager.stats()} | ${sessionManager.stats()} | Claw: ${clawLoader.count} 个`);
+    console.log(`${memoryManager.stats()} | ${sessionManager.stats()} | Skills: ${skillLoader.count} 个`);
     console.log(`控制台和飞书会话已分离，各自独立上下文`);
     console.log(`输入 'q' 退出 | '/stats' Token | '/todo' 任务 | '/multi' 多行模式`);
     console.log(`提示: 粘贴多行内容时不会自动触发，按回车发送\n`);
@@ -546,7 +546,7 @@ export {
   channelManager,
   identitySystem,
   introspection,
-  clawLoader,
+  skillLoader,
   config,
   logger,
 };

@@ -265,8 +265,8 @@ function buildSystemPrompt(selectedModel?: string): string {
   const identity = identitySystem.getSummary();
   if (identity) parts.push(identity);
   
-  const clawContent = skillLoader.getLoadedContent();
-  if (clawContent) parts.push(clawContent);
+  const skillContent = skillLoader.getLoadedContent();
+  if (skillContent) parts.push(skillContent);
   
   const now = new Date();
   parts.push(`当前时间: ${now.toLocaleString("zh-CN", { 
@@ -313,9 +313,9 @@ ${workflows.slice(0, 3).map(w => `- ${w.name}: ${w.status}`).join('\n')}`);
 - workflow_create: 从 Mermaid 创建工作流
 - workflow_run: 执行工作流`);
 
-  const clawList = skillLoader.list();
-  if (clawList !== "无可用技能") {
-    parts.push(`\n## 可用技能\n${clawList}`);
+  const skillList = skillLoader.list();
+  if (skillList !== "无可用技能") {
+    parts.push(`\n## 可用技能\n${skillList}`);
   }
   
   return parts.join("\n\n");
