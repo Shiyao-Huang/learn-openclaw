@@ -254,7 +254,16 @@ ${patterns.slice(0, 3).map(p => `- ${p.sequence.join(' → ')}`).join('\n')}`);
 ${plugins.map(p => `- ${p.name}: ${p.tools.join(', ') || '无工具'}`).join('\n')}`);
   }
 
-  parts.push(`## 重要提醒
+  // 自动加载长期记忆关键信息
+  const longTermMemory = memoryManager.longterm.read();
+  if (longTermMemory && longTermMemory !== '长期记忆为空' && longTermMemory.length > 0) {
+    const truncatedMemory = longTermMemory.length > 2000 
+      ? longTermMemory.slice(0, 2000) + '\n\n...(记忆已截断，使用 longterm_read 查看完整内容)'
+      : longTermMemory;
+    parts.push(`## 长期记忆摘要\n${truncatedMemory}`);
+  }
+
+    parts.push(`## 重要提醒
 - 安全系统：危险操作需要确认
 - 进化系统：使用 evolution_analyze 分析行为
 - 插件系统：使用 plugin_load 加载插件 (内置: weather, calculator, timestamp)`);
@@ -302,7 +311,15 @@ async function chat(
   });
   logger.updateTokens(response.usage);
 
+  // 工具调用循環 (迭代上限防止无限循环)
+  const MAX_TOOL_ITERATIONS = 50;
+  let toolIterations = 0;
+
   while (response.stop_reason === "tool_use") {
+    if (++toolIterations > MAX_TOOL_ITERATIONS) {
+      console.warn(`\x1b[33m[安全] 工具调用次数超过 ${MAX_TOOL_ITERATIONS} 次上限，强制停止\x1b[0m`);
+      break;
+    }
     const toolUseBlocks = response.content.filter(
       (b): b is Anthropic.ToolUseBlock => b.type === "tool_use"
     );

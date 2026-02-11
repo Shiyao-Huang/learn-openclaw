@@ -264,58 +264,5 @@ export const tools: ToolDefinition[] = [
       required: ["items"]
     }
   },
-  
-  // V17: Web 工具
-  {
-    name: "web_fetch",
-    description: "Fetch and extract readable content from a URL (HTML → markdown/text). Use for lightweight page access without browser automation.",
-    input_schema: {
-      type: "object",
-      properties: {
-        url: { type: "string", description: "HTTP or HTTPS URL to fetch." },
-        extractMode: { 
-          type: "string", 
-          enum: ["markdown", "text"],
-          description: 'Extraction mode ("markdown" or "text").',
-          default: "markdown"
-        },
-        maxChars: { 
-          type: "number", 
-          description: "Maximum characters to return (truncates when exceeded).",
-          minimum: 100
-        }
-      },
-      required: ["url"]
-    }
-  },
-  {
-    name: "web_search",
-    description: "Search the web using Brave Search API. Supports region-specific and localized search via country and language parameters.",
-    input_schema: {
-      type: "object",
-      properties: {
-        query: { type: "string", description: "Search query string." },
-        count: { 
-          type: "number", 
-          description: "Number of results to return (1-10).",
-          minimum: 1,
-          maximum: 10,
-          default: 5
-        },
-        country: { 
-          type: "string", 
-          description: "2-letter country code for region-specific results (e.g., 'DE', 'US', 'ALL'). Default: 'US'."
-        },
-        search_lang: { 
-          type: "string", 
-          description: "ISO language code for search results (e.g., 'de', 'en', 'fr')."
-        },
-        freshness: { 
-          type: "string", 
-          description: "Filter results by discovery time (Brave only). Values: 'pd' (past 24h), 'pw' (past week), 'pm' (past month), 'py' (past year)."
-        }
-      },
-      required: ["query"]
-    }
-  },
+  // 注意: web_fetch 和 web_search 由 getWebTools() 提供，避免重复定义
 ];

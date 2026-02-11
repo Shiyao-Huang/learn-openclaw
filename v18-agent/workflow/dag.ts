@@ -142,26 +142,29 @@ export class MermaidParser {
     let label = id;
     let type: DAGNode['type'] = 'task';
     
+    // 转义 id 中的正则特殊字符
+    const escapedId = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    
     // 提取标签和类型
-    const labelMatch = line.match(new RegExp(`${id}\\[([^\\]]+)\\]`));
+    const labelMatch = line.match(new RegExp(`${escapedId}\\[([^\\]]+)\\]`));
     if (labelMatch) {
       label = labelMatch[1];
       type = 'task';
     }
     
-    const condMatch = line.match(new RegExp(`${id}\\{([^}]+)\\}`));
+    const condMatch = line.match(new RegExp(`${escapedId}\\{([^}]+)\\}`));
     if (condMatch) {
       label = condMatch[1];
       type = 'condition';
     }
     
-    const startMatch = line.match(new RegExp(`${id}\\(\\(([^)]+)\\)\\)`));
+    const startMatch = line.match(new RegExp(`${escapedId}\\(\\(([^)]+)\\)\\)`));
     if (startMatch) {
       label = startMatch[1];
       type = 'start';
     }
     
-    const endMatch = line.match(new RegExp(`${id}\\[\\[([^\\]]+)\\]\\]`));
+    const endMatch = line.match(new RegExp(`${escapedId}\\[\\[([^\\]]+)\\]\\]`));
     if (endMatch) {
       label = endMatch[1];
       type = 'end';

@@ -236,6 +236,15 @@ function buildSystemPrompt(selectedModel?: string): string {
 ${workflows.slice(0, 3).map(w => `- ${w.name}: ${w.status}`).join('\n')}`);
   }
 
+  // 自动加载长期记忆关键信息
+  const longTermMemory = memoryManager.longterm.read();
+  if (longTermMemory && longTermMemory !== '长期记忆为空' && longTermMemory.length > 0) {
+    const truncatedMemory = longTermMemory.length > 2000 
+      ? longTermMemory.slice(0, 2000) + '\n\n...(记忆已截断，使用 longterm_read 查看完整内容)'
+      : longTermMemory;
+    parts.push(`## 长期记忆摘要\n${truncatedMemory}`);
+  }
+
   parts.push(`## 系统能力 (V16)
 - V12 安全: 工具权限分级、审计日志
 - V13 进化: 行为分析、优化建议
@@ -319,7 +328,15 @@ async function chat(
     Date.now() - startTime
   );
 
+  // 工具调用循環 (迭代上限防止无限循环)
+  const MAX_TOOL_ITERATIONS = 50;
+  let toolIterations = 0;
+
   while (response.stop_reason === "tool_use") {
+    if (++toolIterations > MAX_TOOL_ITERATIONS) {
+      console.warn(`\x1b[33m[安全] 工具调用次数超过 ${MAX_TOOL_ITERATIONS} 次上限，强制停止\x1b[0m`);
+      break;
+    }
     const toolUseBlocks = response.content.filter(
       (b): b is Anthropic.ToolUseBlock => b.type === "tool_use"
     );
