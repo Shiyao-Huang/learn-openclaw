@@ -101,7 +101,7 @@ export class MermaidParser {
   
   private parseLine(line: string, nodes: Map<string, DAGNode>, edges: DAGEdge[]) {
     // 匹配边: A --> B 或 A -->|condition| B
-    const edgePattern = /(\w+)(?:\[.*?\]|\{.*?\}|\(\(.*?\)\)|\[\[.*?\]\])?\s*-->\s*(?:\|(\w+)\|)?\s*(\w+)(?:\[.*?\]|\{.*?\}|\(\(.*?\)\)|\[\[.*?\]\])?/g;
+    const edgePattern = /([\w\u4e00-\u9fff\u3400-\u4dbf]+)(?:\[.*?\]|\{.*?\}|\(\(.*?\)\)|\[\[.*?\]\])?\s*-->\s*(?:\|([\w\u4e00-\u9fff\u3400-\u4dbf]+)\|)?\s*([\w\u4e00-\u9fff\u3400-\u4dbf]+)(?:\[.*?\]|\{.*?\}|\(\(.*?\)\)|\[\[.*?\]\])?/g;
     
     let match;
     while ((match = edgePattern.exec(line)) !== null) {
@@ -124,10 +124,10 @@ export class MermaidParser {
     
     // 匹配独立节点定义
     const nodePatterns = [
-      /(\w+)\[([^\]]+)\]/,           // A[Task A] - 普通任务
-      /(\w+)\{([^}]+)\}/,            // A{Condition} - 条件
-      /(\w+)\(\(([^)]+)\)\)/,        // A((Start)) - 开始
-      /(\w+)\[\[([^\]]+)\]\]/,       // A[[End]] - 结束
+      /([\w\u4e00-\u9fff\u3400-\u4dbf]+)\[([^\]]+)\]/,           // A[Task A] - 普通任务
+      /([\w\u4e00-\u9fff\u3400-\u4dbf]+)\{([^}]+)\}/,            // A{Condition} - 条件
+      /([\w\u4e00-\u9fff\u3400-\u4dbf]+)\(\(([^)]+)\)\)/,        // A((Start)) - 开始
+      /([\w\u4e00-\u9fff\u3400-\u4dbf]+)\[\[([^\]]+)\]\]/,       // A[[End]] - 结束
     ];
     
     for (const pattern of nodePatterns) {
