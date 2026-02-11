@@ -9,6 +9,7 @@ import * as os from "os";
 import {
   PersistenceManager,
   RecoveryHandler,
+  createPersistenceHandlers,
   type AgentState,
   type SessionState,
   type TaskState,
@@ -17,44 +18,45 @@ import {
   type WorkflowState,
 } from "../v19-agent/persistence/index.js";
 
+// Mock data shared across test suites
+const mockAgent: AgentState = {
+  id: "test-agent",
+  name: "Test Agent",
+  status: "running",
+  trustLevel: "owner",
+  config: {},
+  stats: { tasksCompleted: 10, tasksFailed: 2, uptime: 3600000 },
+};
+
+const mockSession: SessionState = {
+  id: "session-1",
+  channel: "console",
+  userId: "owner",
+  messages: [],
+  context: {},
+};
+
+const mockTasks: TaskState[] = [
+  {
+    id: "task-1",
+    type: "general",
+    status: "completed",
+    priority: 2,
+    description: "Test task",
+    dependencies: [],
+    progress: 100,
+    createdAt: Date.now(),
+  },
+];
+
+const mockSubAgents: SubAgentState[] = [];
+const mockMemory: MemoryState = { shortTerm: [], longTerm: [], dailyNotes: {}, sessionContext: {} };
+const mockWorkflow: WorkflowState = { activeWorkflows: [], completedWorkflows: [] };
+
 describe("V19 Persistence System", () => {
   let tempDir: string;
   let manager: PersistenceManager;
   let recovery: RecoveryHandler;
-
-  const mockAgent: AgentState = {
-    id: "test-agent",
-    name: "Test Agent",
-    status: "running",
-    trustLevel: "owner",
-    config: {},
-    stats: { tasksCompleted: 10, tasksFailed: 2, uptime: 3600000 },
-  };
-
-  const mockSession: SessionState = {
-    id: "session-1",
-    channel: "console",
-    userId: "owner",
-    messages: [],
-    context: {},
-  };
-
-  const mockTasks: TaskState[] = [
-    {
-      id: "task-1",
-      type: "general",
-      status: "completed",
-      priority: 2,
-      description: "Test task",
-      dependencies: [],
-      progress: 100,
-      createdAt: Date.now(),
-    },
-  ];
-
-  const mockSubAgents: SubAgentState[] = [];
-  const mockMemory: MemoryState = { shortTerm: [], longTerm: [], dailyNotes: {}, sessionContext: {} };
-  const mockWorkflow: WorkflowState = { activeWorkflows: [], completedWorkflows: [] };
 
   beforeEach(() => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "v19-test-"));
@@ -382,7 +384,6 @@ describe("Persistence Tools", () => {
   });
 
   it("should create snapshot via tool", () => {
-    const { createPersistenceHandlers } = require("../v19-agent/persistence/tools.js");
     const handlers = createPersistenceHandlers(manager, recovery, stateProvider);
 
     const result = handlers.snapshot_create({ name: "Test", tags: ["test"] });
@@ -393,7 +394,6 @@ describe("Persistence Tools", () => {
   });
 
   it("should list snapshots via tool", () => {
-    const { createPersistenceHandlers } = require("../v19-agent/persistence/tools.js");
     const handlers = createPersistenceHandlers(manager, recovery, stateProvider);
 
     manager.createSnapshot(mockAgent, mockSession, mockTasks, mockSubAgents, mockMemory, mockWorkflow);
@@ -404,7 +404,6 @@ describe("Persistence Tools", () => {
   });
 
   it("should create checkpoint via tool", () => {
-    const { createPersistenceHandlers } = require("../v19-agent/persistence/tools.js");
     const handlers = createPersistenceHandlers(manager, recovery, stateProvider);
 
     const result = handlers.checkpoint_create({
@@ -418,7 +417,6 @@ describe("Persistence Tools", () => {
   });
 
   it("should check recovery via tool", () => {
-    const { createPersistenceHandlers } = require("../v19-agent/persistence/tools.js");
     const handlers = createPersistenceHandlers(manager, recovery, stateProvider);
 
     const result = handlers.recovery_check();
@@ -427,7 +425,6 @@ describe("Persistence Tools", () => {
   });
 
   it("should view crash history via tool", () => {
-    const { createPersistenceHandlers } = require("../v19-agent/persistence/tools.js");
     const handlers = createPersistenceHandlers(manager, recovery, stateProvider);
 
     manager.recordCrash("error", "Test error", "main");

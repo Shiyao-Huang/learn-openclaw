@@ -9,5 +9,5 @@
     "noEmit": true,
     "downlevelIteration": true
   },
-  "include": ["*.ts", "v11-agent/**/*.ts", "plug/**/*.ts"]
+  "include": ["*.ts", "v11-agent/**/*.ts", "v17-agent/**/*.ts", "v18-agent/**/*.ts", "v19-agent/**/*.ts", "v20-agent/**/*.ts", "plug/**/*.ts", "tests/**/*.ts"]
 }
