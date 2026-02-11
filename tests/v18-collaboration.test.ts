@@ -59,12 +59,20 @@ describe('V18 Collaboration System', () => {
 
     it('should cleanup completed agents', async () => {
       const agent = await subAgentManager.create({ task: 'Test', timeout: 100 });
-      
-      // Wait for completion
-      await new Promise(r => setTimeout(r, 200));
-      
+
+      // Wait for agent to reach a terminal state (failed/completed/stopped)
+      const maxWait = 5000;
+      const start = Date.now();
+      while (Date.now() - start < maxWait) {
+        const current = subAgentManager.get(agent.id);
+        if (current && ["completed", "failed", "stopped"].includes(current.status)) {
+          break;
+        }
+        await new Promise(r => setTimeout(r, 100));
+      }
+
       const count = subAgentManager.cleanup();
-      expect(count).toBeGreaterThanOrEqual(0);
+      expect(count).toBeGreaterThanOrEqual(1);
     });
   });
 

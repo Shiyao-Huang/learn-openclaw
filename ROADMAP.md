@@ -4,7 +4,7 @@
 
 ---
 
-## 已完成 (V0-V15)
+## 已完成 (V0-V18)
 
 | 版本 | 核心能力 | 状态 |
 |------|----------|------|
@@ -25,23 +25,27 @@
 | V13 | 自进化系统 | ✅ |
 | V13.5 | 上下文压缩 | ✅ |
 | V14 | 插件系统 | ✅ |
+| V15 | 多模型协作 | ✅ |
 | V16 | 工作流引擎 | ✅ |
-| **V17** | **外部集成** | ✅ **已完成** |
+| V17 | 外部集成 | ✅ |
+| V18 | 团队协作 | ✅ |
 
 ---
 
-## 模块化版本 (v11-agent ~ v16-agent)
+## 模块化版本 (v11-agent ~ v18-agent)
 
 每个版本都是独立可运行的模块化实现，渐进式继承：
 
-| 目录 | 新增模块 | 继承 |
-|------|----------|------|
-| v11-agent | 基础模块化架构 | - |
-| v12-agent | security/ 安全策略 | V11 |
-| v13-agent | evolution/ 自进化 | V12 + V11 |
-| v14-agent | plugin/ 插件系统 | V13 + V12 + V11 |
-| v15-agent | multimodel/ 多模型 | V14 + V13 + V12 + V11 |
-| v16-agent | workflow/ DAG引擎 | V15 + V14 + V13 + V12 + V11 |
+| 目录 | 新增模块 | 工具数 | 继承 |
+|------|----------|--------|------|
+| v11-agent | 基础模块化架构 | 28 | - |
+| v12-agent | security/ 安全策略 | 28 | V11 |
+| v13-agent | evolution/ 自进化 | 28 | V12 + V11 |
+| v14-agent | plugins/ 插件系统 | 28 | V13 + V12 + V11 |
+| v15-agent | multimodel/ 多模型 | 28 | V14 + V13 + V12 + V11 |
+| v16-agent | workflow/ DAG引擎 | 28 | V15 + V14 + V13 + V12 + V11 |
+| v17-agent | external/ Web集成 | 30 | V16 + ... + V11 |
+| v18-agent | collaboration/ 团队 | 30 | V17 + ... + V11 |
 
 ---
 
@@ -210,14 +214,40 @@
 
 ---
 
+## 测试覆盖
+
+| 测试文件 | 测试数 | 覆盖版本 |
+|----------|--------|---------|
+| v7-layered-memory.test.ts | 15 | V7 |
+| v8-heartbeat.test.ts | 15 | V8 |
+| v9-session.test.ts | 20 | V9 |
+| v10-introspection.test.ts | 16 | V10 |
+| v11-channel.test.ts | 8 | V11 |
+| v12-security.test.ts | 16 | V12 |
+| v13-evolution.test.ts | 13 | V13 |
+| v13.5-compression.test.ts | 14 | V13.5 |
+| v14-plugin.test.ts | 14 | V14 |
+| v15-multimodel.test.ts | 119 | V15 |
+| v16-workflow.test.ts | 13 | V16 |
+| v17-external.test.ts | 11 | V17 |
+| v18-collaboration.test.ts | 13 | V18 |
+| **benchmark-evolution.test.ts** | **111** | **V11-V18 跨版本** |
+| **合计** | **398** | |
+
+---
+
 ## 技术债务
 
-- [x] 完善测试覆盖 (V11-V16 测试已添加)
+- [x] 完善测试覆盖 (V7-V18 全版本测试已添加)
 - [x] 性能优化 - 上下文压缩 (V13.5)
 - [x] V16 工作流测试 (2026-02-11)
+- [x] V15 多模型测试 (2026-02-12, 119 个测试)
+- [x] V18 协作测试修复 (2026-02-12, cleanup bug fix)
+- [x] Claw→Skill 术语统一 (2026-02-12, V11-V18)
+- [x] SkillLoader skillDir→skillsDir 属性名修复 (2026-02-12)
+- [x] 跨版本 Benchmark 测试套件 (2026-02-12, 111 个测试)
 - [ ] 统一错误处理
 - [ ] 文档国际化
-- [ ] V17 外部集成实现
 
 ---
 

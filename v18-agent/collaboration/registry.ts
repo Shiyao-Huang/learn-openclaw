@@ -146,7 +146,7 @@ export class AgentRegistry {
     let count = 0;
 
     for (const [id, agent] of this.agents) {
-      if (now - agent.lastSeen > maxAgeMs) {
+      if (now - agent.lastSeen >= maxAgeMs) {
         agent.status = "offline";
         count++;
       }

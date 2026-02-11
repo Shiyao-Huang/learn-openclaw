@@ -222,12 +222,16 @@ main();
    * 保存代理日志
    */
   private saveAgentLog(agent: SubAgent): void {
-    const logPath = path.join(agent.workDir, "output.log");
-    const logData = {
-      ...agent,
-      logs: agent.logs.slice(-100), // 只保留最后100行
-    };
-    fs.writeFileSync(logPath, JSON.stringify(logData, null, 2));
+    try {
+      const logPath = path.join(agent.workDir, "output.log");
+      const logData = {
+        ...agent,
+        logs: agent.logs.slice(-100), // 只保留最后100行
+      };
+      fs.writeFileSync(logPath, JSON.stringify(logData, null, 2));
+    } catch {
+      // workDir may have been cleaned up already
+    }
   }
 
   /**
@@ -335,14 +339,14 @@ main();
    * 清理已完成的代理
    */
   cleanup(): number {
-    let count = 0;
-    for (const [id, agent] of this.agents) {
-      if (["completed", "failed", "stopped"].includes(agent.status)) {
-        this.delete(id);
-        count++;
-      }
+    const toDelete = Array.from(this.agents.entries())
+      .filter(([, agent]) => ["completed", "failed", "stopped"].includes(agent.status))
+      .map(([id]) => id);
+
+    for (const id of toDelete) {
+      this.delete(id);
     }
-    return count;
+    return toDelete.length;
   }
 
   /**
