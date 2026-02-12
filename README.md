@@ -34,8 +34,12 @@
 | V15 | `v15-agent.ts` | 4945 | 64 | Multi-model routing |
 | V16 | `v16-agent/` | 16328 | 70 | DAG workflow engine |
 | V17 | `v17-agent/` | 16757 | 72 | External integration |
-| **V18** | `v18-agent/` | ~18000 | 82 | **Team collaboration** |
-| **Total** | | **~35000** | | |
+| V18 | `v18-agent/` | ~18000 | 82 | Team collaboration |
+| V19 | `v19-agent/` | ~19500 | 93 | Persistence & recovery |
+| V20 | `v20-agent/` | ~21000 | 104 | Browser automation |
+| **V21** | `v21-agent/` | ~23800 | 113 | **Cron & reminders** |
+| **V22** | `v22-agent/` | ~26600 | 118 | **Code sandbox** |
+| **Total** | | **~60000** | | |
 
 Notes:
 - V5.5-V9 all expose the `Skill` tool with `skill` input.
