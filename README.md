@@ -40,10 +40,32 @@
 | **V21** | `v21-agent/` | ~23800 | 113 | **Cron & reminders** |
 | **V22** | `v22-agent/` | ~26600 | 118 | **Code sandbox** |
 | **V23** | `v23-agent/` | ~29000 | 123 | **Vision understanding** |
-| **Total** | | **~89000** | | |
+| **V24** | `v24-agent/` | ~31500 | 129 | **TTS (Text-to-Speech)** |
+| **V25** | `v25-agent/` | ~34000 | 134 | **STT (Speech-to-Text)** |
+| **Total** | | **~104000** | | |
 
 Notes:
 - V5.5-V9 all expose the `Skill` tool with `skill` input.
+
+---
+
+## 🤖 Self-Evolution History
+
+> **From V11 onwards, all iterations are completed by AI Agent (Lobster/龙虾) through automated evolution cron jobs.**
+
+| Phase | Versions | Developer | Notes |
+|---|---|---|---|
+| Manual | V0-V10 | Human | Handcrafted learning path |
+| **Auto-Evolved** | **V11-V25** | **AI Agent (Lobster)** | Via cron-triggered self-evolution |
+
+### Auto-Evolution Milestones
+
+- **V11-V18**: AI Agent autonomously added Channel, Security, Evolution, Workflow, External, Collaboration systems
+- **V19-V20**: Added Persistence & Browser automation
+- **V21-V23**: Added Cron, Sandbox, Vision understanding
+- **V24-V25**: Added TTS (Text-to-Speech) & STT (Speech-to-Text)
+
+See [memory/](./memory/) for detailed evolution logs.
 
 ---
 
