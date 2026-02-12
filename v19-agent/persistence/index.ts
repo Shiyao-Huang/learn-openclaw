@@ -8,7 +8,9 @@
  * - 崩溃恢复: 从故障中自动恢复
  */
 
-export { PersistenceManager, PersistenceConfig, DEFAULT_CONFIG } from "./manager.js";
-export { RecoveryHandler, RecoveryHandlerOptions } from "./recovery.js";
+export { PersistenceManager, DEFAULT_CONFIG } from "./manager.js";
+export type { PersistenceConfig } from "./manager.js";
+export { RecoveryHandler } from "./recovery.js";
+export type { RecoveryHandlerOptions } from "./recovery.js";
 export { getPersistenceTools, createPersistenceHandlers } from "./tools.js";
 export * from "./types.js";

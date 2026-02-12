@@ -42,6 +42,19 @@
 
 ### 搜索方案
 - 使用智谱 MCP (web-search-prime/web-reader/zread) 进行联网搜索
+- [2026-02-12] 
+### SWE-bench 测试优化 (2026-02-12)
+
+**Bug Waitlist 机制**:
+- 不强制停止 loop，超过阈值后继续执行但监测死循环
+- 发现的 bug 记入 waitlist，后续统一处理
+- 每次测试结果必须写入记忆（daily_write）
+
+**Loop 策略**:
+- 检测循环 → 记录到 waitlist → 继续执行
+- 真正的死循环（完全相同状态重复）才考虑干预
+- 保持测试完整性，不因单点问题中断
+
 ## OpenClaw 自进化系统学习计划 (2026-02-10)
 
 ### 参考项目: claude-mem

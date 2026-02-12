@@ -264,5 +264,27 @@ export const tools: ToolDefinition[] = [
       required: ["items"]
     }
   },
-  // 注意: web_fetch 和 web_search 由 getWebTools() 提供，避免重复定义
+  // V17 Web 工具
+  {
+    name: "web_fetch",
+    description: "Fetch and extract web page content",
+    input_schema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "URL to fetch" }
+      },
+      required: ["url"]
+    }
+  },
+  {
+    name: "web_search",
+    description: "Web search via Brave Search API",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Search query" }
+      },
+      required: ["query"]
+    }
+  },
 ];

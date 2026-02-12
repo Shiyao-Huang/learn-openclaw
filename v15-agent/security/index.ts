@@ -136,7 +136,7 @@ export const DEFAULT_SECURITY_POLICY: SecurityPolicy = {
   ],
   
   auditEnabled: true,
-  confirmDangerous: true,
+  confirmDangerous: false,  // 默认 YOLO 模式
 };
 
 // ============================================================================

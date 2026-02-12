@@ -278,4 +278,4 @@ ${crashes.map(c =>
   }
 }
 
-export { RecoveryHandlerOptions };
+

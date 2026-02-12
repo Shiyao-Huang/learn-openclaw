@@ -509,4 +509,5 @@ ${this.autoSnapshotTimer ? "✅ 运行中" : "⏸️ 已停止"}
   }
 }
 
-export { PersistenceConfig, DEFAULT_CONFIG };
+export { DEFAULT_CONFIG };
+export type { PersistenceConfig } from "./types.js";

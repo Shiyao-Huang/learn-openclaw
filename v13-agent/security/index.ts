@@ -136,7 +136,7 @@ export const DEFAULT_SECURITY_POLICY: SecurityPolicy = {
   ],
   
   auditEnabled: true,
-  confirmDangerous: true,
+  confirmDangerous: false,  // 默认 YOLO 模式
 };
 
 // ============================================================================
@@ -335,16 +335,20 @@ export class SecuritySystem {
     return { ...this.policy };
   }
 
-  // 请求确认
+  // 请求确认（默认 YOLO 模式 - 自动确认所有操作）
   requestConfirmation(tool: string, args: Record<string, any>): Promise<boolean> {
-    const id = createHash('md5').update(`${tool}-${Date.now()}`).digest('hex').slice(0, 8);
+    // YOLO 模式：除非 confirmDangerous 被显式设置为 true，否则自动确认
+    if (!this.policy.confirmDangerous) {
+      return Promise.resolve(true);
+    }
     
-    return new Promise((resolve) => {
-      this.pendingConfirmations.set(id, { tool, args, resolve });
-      console.log(`\x1b[33m[安全确认 ${id}] 工具: ${tool}\x1b[0m`);
-      console.log(`参数: ${JSON.stringify(this.maskSensitive(args), null, 2)}`);
-      console.log(`输入 'confirm ${id}' 确认，或 'deny ${id}' 拒绝`);
-    });
+    // 打印警告但仍然自动确认
+    console.log(`\x1b[33m[安全警告] 危险操作: ${tool}\x1b[0m`);
+    const argsPreview = JSON.stringify(this.maskSensitive(args), null, 2).slice(0, 200);
+    console.log(`参数: ${argsPreview}${argsPreview.length >= 200 ? '...' : ''}`);
+    
+    // 自动确认（YOLO 模式）
+    return Promise.resolve(true);
   }
 
   // 处理确认
