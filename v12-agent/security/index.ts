@@ -274,6 +274,128 @@ export class SecuritySystem {
   updatePolicy(policy: Partial<SecurityPolicy>): void {
     this.policy = { ...this.policy, ...policy };
   }
+
+  // 遮蔽敏感信息
+  maskSensitive(data: string): string {
+    // API Keys
+    data = data.replace(/sk-[a-zA-Z0-9]{48}/g, "sk-***");
+    // 密码
+    data = data.replace(/password["']?\s*[:=]\s*["'][^"']+/gi, 'password: "***"');
+    // Token
+    data = data.replace(/token["']?\s*[:=]\s*["'][^"']+/gi, 'token: "***"');
+    // 私钥
+    data = data.replace(/-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----/g, "[PRIVATE KEY]");
+
+    return data;
+  }
+
+  // 获取审计日志（带过滤）
+  getAuditLogs(options?: {
+    date?: string;
+    limit?: number;
+    userId?: string;
+    tool?: string;
+  }): AuditRecord[] {
+    return this.getAuditLogs(options);
+  }
 }
 
 export default SecuritySystem;
+
+// ============================================================================
+// 安全工具定义
+// ============================================================================
+
+export function getSecurityTools() {
+  return [
+    {
+      name: "security_check",
+      description: "检查操作是否被允许",
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          tool: { type: "string", description: "要检查的工具名" },
+          args: { type: "object", description: "工具参数" },
+        },
+        required: ["tool"],
+      },
+    },
+    {
+      name: "security_audit",
+      description: "查看审计日志",
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          days: { type: "number", description: "查看最近几天，默认7" },
+          tool: { type: "string", description: "筛选特定工具" },
+          limit: { type: "number", description: "最大条数，默认100" },
+        },
+      },
+    },
+    {
+      name: "security_policy",
+      description: "查看或更新安全策略",
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          action: { 
+            type: "string", 
+            enum: ["get", "update"],
+            description: "操作类型" 
+          },
+          updates: { 
+            type: "object", 
+            description: "更新内容（action=update时）" 
+          },
+        },
+        required: ["action"],
+      },
+    },
+    {
+      name: "security_mask",
+      description: "遮蔽敏感信息",
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          text: { type: "string", description: "要遮蔽的文本" },
+        },
+        required: ["text"],
+      },
+    },
+  ];
+}
+
+// ============================================================================
+// 工具处理器
+// ============================================================================
+
+export function createSecurityHandlers(security: SecuritySystem) {
+  return {
+    security_check: (args: { tool: string; args?: Record<string, any> }) => {
+      const result = security.checkPermission(args.tool, args.args || {});
+      return JSON.stringify(result, null, 2);
+    },
+    
+    security_audit: (args: { days?: number; tool?: string; limit?: number }) => {
+      const logs = security.getAuditLogs(args);
+      return JSON.stringify({
+        count: logs.length,
+        logs: logs.slice(0, 20),  // 只返回前20条
+      }, null, 2);
+    },
+    
+    security_policy: (args: { action: string; updates?: Partial<SecurityPolicy> }) => {
+      if (args.action === 'get') {
+        return JSON.stringify(security.getPolicy(), null, 2);
+      } else if (args.action === 'update' && args.updates) {
+        security.updatePolicy(args.updates);
+        return '策略已更新';
+      }
+      return '无效操作';
+    },
+    
+    security_mask: (args: { text: string }) => {
+      return security.maskSensitive(args.text);
+    },
+  };
+}

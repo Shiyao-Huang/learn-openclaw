@@ -39,7 +39,8 @@
 | V20 | `v20-agent/` | ~21000 | 104 | Browser automation |
 | **V21** | `v21-agent/` | ~23800 | 113 | **Cron & reminders** |
 | **V22** | `v22-agent/` | ~26600 | 118 | **Code sandbox** |
-| **Total** | | **~60000** | | |
+| **V23** | `v23-agent/` | ~29000 | 123 | **Vision understanding** |
+| **Total** | | **~89000** | | |
 
 Notes:
 - V5.5-V9 all expose the `Skill` tool with `skill` input.
