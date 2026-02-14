@@ -18,6 +18,19 @@ const PRIVATE_IP_RE =
   /^(127\.\d+\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|192\.168\.\d+\.\d+|localhost)/i;
 
 /**
+ * 从 Markdown 链接语法中提取 URL
+ */
+function extractMarkdownLinks(message: string): string[] {
+  const links: string[] = [];
+  for (const match of message.matchAll(MARKDOWN_LINK_RE)) {
+    if (match[1]) {
+      links.push(match[1]);
+    }
+  }
+  return links;
+}
+
+/**
  * 移除 Markdown 链接语法，只保留裸 URL
  */
 function stripMarkdownLinks(message: string): string {
@@ -49,9 +62,11 @@ function isAllowedUrl(
       return { allowed: false, reason: "protocol_not_allowed" };
     }
 
-    // 检查本地 URL
-    if (!options?.allowLocal && parsed.hostname === "127.0.0.1") {
-      return { allowed: false, reason: "localhost_blocked" };
+    // 检查本地 URL (127.0.0.1 和 localhost)
+    if (!options?.allowLocal) {
+      if (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost") {
+        return { allowed: false, reason: "localhost_blocked" };
+      }
     }
 
     // 检查私有 IP
