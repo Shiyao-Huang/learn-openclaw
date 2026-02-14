@@ -57,6 +57,12 @@ function isAllowedUrl(
   try {
     const parsed = new URL(raw);
 
+    // 默认只允许 HTTPS，除非显式允许 HTTP
+    const allowHttp = options?.allowHttp ?? false;
+    if (parsed.protocol === "http:" && !allowHttp) {
+      return { allowed: false, reason: "http_not_allowed" };
+    }
+
     // 只允许 HTTP/HTTPS
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
       return { allowed: false, reason: "protocol_not_allowed" };
@@ -93,10 +99,27 @@ export function extractLinksFromMessage(
   }
 
   const maxLinks = resolveMaxLinks(options?.maxLinks);
-  const sanitized = stripMarkdownLinks(source);
   const seen = new Set<string>();
   const results: string[] = [];
 
+  // 先提取 Markdown 链接中的 URL
+  const markdownLinks = extractMarkdownLinks(source);
+  for (const raw of markdownLinks) {
+    const check = isAllowedUrl(raw, options);
+    if (!check.allowed) {
+      continue;
+    }
+    if (!seen.has(raw)) {
+      seen.add(raw);
+      results.push(raw);
+      if (results.length >= maxLinks) {
+        return results;
+      }
+    }
+  }
+
+  // 然后从去除 Markdown 链接后的文本中提取裸 URL
+  const sanitized = stripMarkdownLinks(source);
   for (const match of sanitized.matchAll(BARE_LINK_RE)) {
     const raw = match[0]?.trim();
     if (!raw) {

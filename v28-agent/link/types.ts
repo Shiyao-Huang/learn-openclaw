@@ -46,6 +46,8 @@ export type ExtractLinksOptions = {
   allowLocal?: boolean;
   /** 是否允许私有 IP */
   allowPrivate?: boolean;
+  /** 是否允许 HTTP URL (默认 false，只允许 HTTPS) */
+  allowHttp?: boolean;
 };
 
 /**
