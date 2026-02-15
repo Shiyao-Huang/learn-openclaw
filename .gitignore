@@ -29,8 +29,8 @@ memory/
 !memory/.gitkeep
 audit/
 !audit/.gitkeep
-security/
-!security/.gitkeep
+/security/
+!/security/.gitkeep
 temp/
 tmp/
 .sessions/

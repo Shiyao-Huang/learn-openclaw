@@ -57,6 +57,50 @@
 | **v26-agent** | **canvas/ 显示系统** | **143** | **V25 + ... + V11** |
 | **v27-agent** | **embedding/ 向量嵌入** | **153** | **V26 + ... + V11** |
 | **v28-agent** | **link/ 链接理解** | **159** | **V27 + ... + V11** |
+| **v29-agent** | **security/ 安全审计** | **167** | **V28 + ... + V11** |
+
+---
+
+## 已完成 (V29)
+
+### V29: 安全审计系统 ✅
+
+**目标**: 让 Agent 能够自动检测和修复安全问题
+
+**已实现:**
+- ✅ `SecurityEngine` - 安全审计引擎核心
+- ✅ 8 个安全审计工具
+  - `security_audit` - 执行完整安全审计
+  - `security_check_permissions` - 检查文件权限
+  - `security_check_config` - 检查配置安全
+  - `security_check_secrets` - 扫描密钥泄露
+  - `security_status` - 获取系统状态
+  - `security_fix` - 自动修复安全问题
+  - `security_report` - 生成安全报告
+  - `security_history` - 获取审计历史
+- ✅ 严重级别: critical / warn / info
+- ✅ 自动修复建议
+- ✅ 多格式报告 (text/json/markdown)
+
+**代码统计:**
+- v29-agent/security/: 3 个模块, ~2000 行
+- 工具总数: 167 个 (V28 的 159 + V29 的 8)
+
+**安全检查:**
+- 文件权限检查 (world-writable 检测)
+- .env 文件权限检查
+- 敏感文件权限检查 (credentials.json, private.key 等)
+- .gitignore 完整性检查
+- Git 追踪检查 (.env 是否被提交)
+- 密钥泄露扫描 (API Keys, Tokens, Passwords 等)
+
+**灵感来源:** OpenClaw security/ 模块
+
+**使用场景:**
+- 部署前安全检查
+- 定期安全扫描
+- 权限审计
+- 密钥泄露检测
 
 ---
 
@@ -377,37 +421,7 @@
 
 ---
 
-## 计划中 (V29+)
-
-### V29: 安全审计系统 (计划中) ⭐ 推荐
-
-**目标**: 让 Agent 能够自动检测和修复安全问题
-
-**计划实现:**
-- `SecurityAuditor` - 安全审计引擎
-- 8-10 个安全检查工具
-  - `security_audit` - 执行完整安全审计
-  - `security_check_config` - 检查配置安全
-  - `security_check_permissions` - 检查文件权限
-  - `security_check_secrets` - 检查密钥泄露
-  - `security_check_plugins` - 检查插件安全
-  - `security_check_exposure` - 检查暴露风险
-  - `security_report` - 生成安全报告
-  - `security_fix` - 自动修复安全问题
-- 严重级别: critical / warn / info
-- 自动修复建议
-
-**灵感来源:** OpenClaw security/ 模块
-- audit.ts (37KB) - 审计核心
-- fix.ts (15KB) - 自动修复
-- skill-scanner.ts (12KB) - 技能扫描
-
-**使用场景:**
-- 部署前安全检查
-- 定期安全扫描
-- 权限审计
-- 密钥泄露检测
-- 插件安全验证
+## 计划中 (V30+)
 
 ### V30: 向量数据库集成 (计划中)
 
@@ -459,8 +473,9 @@
 | **v26-canvas.test.ts** | **20** | **V26** |
 | **v27-embedding.test.ts** | **25** | **V27** |
 | **v28-link.test.ts** | **20** | **V28** |
+| **v29-security.test.ts** | **32** | **V29** |
 | **benchmark-evolution.test.ts** | **111** | **V11-V20 跨版本** |
-| **合计** | **592** | |
+| **合计** | **624** | |
 
 ---
 
@@ -492,6 +507,8 @@
 - [x] V27 向量嵌入测试 (2026-02-14)
 - [x] **V28 链接理解系统 (2026-02-14)** ⭐
 - [x] V28 链接理解测试 (2026-02-14)
+- [x] **V29 安全审计系统 (2026-02-15)** ⭐
+- [x] V29 安全审计测试 (2026-02-15, 32 个测试)
 - [ ] 统一错误处理
 - [ ] 文档国际化
 
@@ -501,6 +518,7 @@
 
 | 日期 | 版本 | 主要更新 |
 |------|------|----------|
+| 2026-02-15 | V29 | 安全审计系统 (Security/Audit) |
 | 2026-02-14 | V28 | 链接理解系统 (Link/Fetch) |
 | 2026-02-14 | V27 | 向量嵌入增强 (Embedding/语义搜索) |
 | 2026-02-13 | V26 | Canvas 显示系统 (UI展示/截图) |
@@ -517,4 +535,4 @@
 
 ---
 
-*Last updated: 2026-02-15 - V29 计划更新 (安全审计系统)*
+*Last updated: 2026-02-15 - V29 安全审计系统完成*
