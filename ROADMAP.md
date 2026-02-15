@@ -379,7 +379,37 @@
 
 ## 计划中 (V29+)
 
-### V29: 向量数据库集成 (计划中)
+### V29: 安全审计系统 (计划中) ⭐ 推荐
+
+**目标**: 让 Agent 能够自动检测和修复安全问题
+
+**计划实现:**
+- `SecurityAuditor` - 安全审计引擎
+- 8-10 个安全检查工具
+  - `security_audit` - 执行完整安全审计
+  - `security_check_config` - 检查配置安全
+  - `security_check_permissions` - 检查文件权限
+  - `security_check_secrets` - 检查密钥泄露
+  - `security_check_plugins` - 检查插件安全
+  - `security_check_exposure` - 检查暴露风险
+  - `security_report` - 生成安全报告
+  - `security_fix` - 自动修复安全问题
+- 严重级别: critical / warn / info
+- 自动修复建议
+
+**灵感来源:** OpenClaw security/ 模块
+- audit.ts (37KB) - 审计核心
+- fix.ts (15KB) - 自动修复
+- skill-scanner.ts (12KB) - 技能扫描
+
+**使用场景:**
+- 部署前安全检查
+- 定期安全扫描
+- 权限审计
+- 密钥泄露检测
+- 插件安全验证
+
+### V30: 向量数据库集成 (计划中)
 
 - 支持 Pinecone
 - 支持 Weaviate
@@ -387,12 +417,18 @@
 - 支持 Milvus
 - 统一的 VectorDB 接口
 
-### V30: 实时语音识别 (计划中)
+### V31: 实时语音识别 (计划中)
 
 - 流式语音输入
 - 实时转录
 - 语音活动检测 (VAD)
 - 多说话人识别
+
+### 备选方向
+
+- **混合搜索** - 向量 + 关键词结合 (从 OpenClaw memory/hybrid.ts 借鉴)
+- **SQLite 向量存储** - 简化向量存储，无外部依赖
+- **Gmail/邮件集成** - 需要 OAuth 配置，复杂度较高
 
 ---
 
@@ -481,4 +517,4 @@
 
 ---
 
-*Last updated: 2026-02-14 - V28 完成*
+*Last updated: 2026-02-15 - V29 计划更新 (安全审计系统)*

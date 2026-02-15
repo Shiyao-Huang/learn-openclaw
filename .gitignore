@@ -76,3 +76,6 @@ channels.json
 # Talk files (generated)
 talk*
 !talk*.md
+
+# Temporary canvas files
+canvas/
