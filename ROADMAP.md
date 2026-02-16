@@ -58,6 +58,236 @@
 | **v27-agent** | **embedding/ 向量嵌入** | **153** | **V26 + ... + V11** |
 | **v28-agent** | **link/ 链接理解** | **159** | **V27 + ... + V11** |
 | **v29-agent** | **security/ 安全审计** | **167** | **V28 + ... + V11** |
+| **v30-agent** | **hybrid/ 混合搜索** | **177** | **V29 + ... + V11** |
+| **v31-agent** | **poll/ 投票系统** | **187** | **V30 + ... + V11** |
+| **v32-agent** | **ratelimit/ 速率限制** | **202** | **V31 + ... + V11** |
+| **v33-agent** | **scanner/ 安全扫描** | **208** | **V32 + ... + V11** |
+| **v34-agent** | **dedupe/ 去重缓存** | **219** | **V33 + ... + V11** |
+
+---
+
+## 已完成 (V34)
+
+### V34: 去重缓存系统 ✅
+
+**目标**: 让 Agent 能够防止重复消息和操作
+
+**已实现:**
+- ✅ `DedupeCache` - 去重缓存核心
+- ✅ `DedupeCacheManager` - 多缓存管理器
+- ✅ 11 个去重缓存工具
+  - `dedupe_check` - 检查键是否重复
+  - `dedupe_batch` - 批量检查多个键
+  - `dedupe_create` - 创建新的去重缓存
+  - `dedupe_get` - 获取键的详情
+  - `dedupe_delete` - 从缓存中删除键
+  - `dedupe_clear` - 清空缓存
+  - `dedupe_list` - 列出所有缓存或缓存中的键
+  - `dedupe_stats` - 获取缓存统计信息
+  - `dedupe_status` - 获取去重系统状态
+  - `dedupe_presets` - 获取预设配置列表
+  - `dedupe_config` - 获取或更新缓存配置
+- ✅ TTL 自动过期
+- ✅ 最大容量限制 (LRU 淘汰)
+- ✅ 多缓存实例支持
+- ✅ 批量检查优化
+- ✅ 命中率统计
+
+**代码统计:**
+- v34-agent/dedupe/: 4 个模块, ~2000 行
+- 工具总数: 219 个 (V33 的 208 + V34 的 11)
+
+**预设配置:**
+- `short` - 1 分钟 TTL, 1000 条
+- `medium` - 5 分钟 TTL, 5000 条
+- `long` - 1 小时 TTL, 10000 条
+- `permanent` - 永不过期, 100000 条
+- `message` - 10 分钟 TTL, 2000 条 (消息去重)
+- `action` - 5 分钟 TTL, 1000 条 (操作去重)
+
+**灵感来源:** OpenClaw infra/dedupe.ts
+
+**使用场景:**
+- 消息去重
+- 操作防抖
+- 事件过滤
+- 请求去重
+
+---
+
+## 已完成 (V33)
+
+### V33: Skill 安全扫描系统 ✅
+
+**目标**: 让 Agent 能够扫描代码和 Skill 的安全问题
+
+**已实现:**
+- ✅ `SkillScanner` - 安全扫描引擎核心
+- ✅ 6 个安全扫描工具
+  - `scanner_scan_dir` - 扫描目录中的代码安全问题
+  - `scanner_scan_file` - 扫描单个文件的安全问题
+  - `scanner_scan_source` - 扫描源码字符串的安全问题
+  - `scanner_rules` - 获取扫描规则列表
+  - `scanner_config` - 获取扫描器配置
+  - `scanner_report` - 生成安全扫描报告
+- ✅ 行级规则检测 (危险命令执行、动态代码执行、挖矿检测等)
+- ✅ 源码级规则检测 (数据泄露、代码混淆、凭证窃取等)
+- ✅ 多种严重级别 (Critical / Warn / Info)
+- ✅ 多格式报告 (text / json / markdown)
+
+**代码统计:**
+- v33-agent/scanner/: 4 个模块, ~1500 行
+- 工具总数: 208 个 (V32 的 202 + V33 的 6)
+
+**检测规则:**
+- 危险命令执行 (exec/spawn/child_process)
+- 动态代码执行 (eval/Function)
+- 加密货币挖矿检测
+- 可疑网络连接
+- 危险模块导入
+- 文件系统访问
+- 网络访问
+- 数据泄露风险
+- 代码混淆检测
+- 环境变量窃取
+
+**灵感来源:** OpenClaw skill-scanner.ts
+
+**使用场景:**
+- Skill 安全审计
+- 代码安全扫描
+- 恶意代码检测
+- 部署前安全检查
+
+---
+
+## 已完成 (V32)
+
+### V32: 速率限制与重试策略 ✅
+
+**目标**: 让 Agent 能够控制 API 调用频率，实现智能重试
+
+**已实现:**
+- ✅ `RateLimitEngine` - 速率限制引擎核心
+- ✅ 15 个速率限制工具
+  - `ratelimit_create` - 创建速率限制器
+  - `ratelimit_delete` - 删除限制器
+  - `ratelimit_reset` - 重置限制器状态
+  - `ratelimit_list` - 列出所有限制器
+  - `ratelimit_get` - 获取限制器详情
+  - `ratelimit_check` - 检查是否允许请求
+  - `ratelimit_consume` - 消耗请求配额
+  - `ratelimit_wait` - 等待可用配额
+  - `ratelimit_stats` - 获取统计信息
+  - `ratelimit_status` - 获取引擎状态
+  - `ratelimit_presets` - 获取预设配置
+  - `ratelimit_config` - 获取/更新配置
+  - `ratelimit_retry` - 使用重试策略执行操作
+  - `ratelimit_delay` - 计算重试延迟
+- ✅ 多种限流策略 (Token Bucket / Sliding Window / Fixed Window)
+- ✅ 多种重试策略 (Fixed / Exponential / Linear / Decorrelated Jitter)
+- ✅ 预设配置 (low/medium/high/api/strict)
+
+**代码统计:**
+- v32-agent/ratelimit/: 5 个模块, ~3000 行
+- 工具总数: 202 个 (V31 的 187 + V32 的 15)
+
+**灵感来源:** OpenClaw ratelimit 相关实现
+
+**使用场景:**
+- API 调用限流
+- 自动重试
+- 流量控制
+- 配额管理
+
+---
+
+## 已完成 (V31)
+
+### V31: 投票系统 ✅
+
+**目标**: 让 Agent 能够创建和管理投票，支持群组决策
+
+**已实现:**
+- ✅ `PollEngine` - 投票引擎核心
+- ✅ 10 个投票工具
+  - `poll_create` - 创建投票
+  - `poll_vote` - 投票
+  - `poll_get` - 获取投票详情
+  - `poll_result` - 获取投票结果
+  - `poll_close` - 关闭投票
+  - `poll_cancel` - 取消投票
+  - `poll_list` - 列出投票
+  - `poll_stats` - 获取统计
+  - `poll_delete` - 删除投票
+  - `poll_check_expired` - 检查过期投票
+- ✅ 单选/多选投票
+- ✅ 限时投票
+- ✅ 匿名投票
+- ✅ 投票修改
+- ✅ 结果统计
+- ✅ 自动过期检测
+
+**代码统计:**
+- v31-agent/poll/: 5 个模块, ~2000 行
+- 工具总数: 187 个 (V30 的 177 + V31 的 10)
+
+**灵感来源:** OpenClaw polls.ts
+
+**使用场景:**
+- 群组决策
+- 意见收集
+- 投票统计
+- 民意调查
+
+---
+
+## 已完成 (V30)
+
+### V30: 混合搜索系统 ✅
+
+**目标**: 结合向量搜索和关键词搜索，实现更精准的检索
+
+**已实现:**
+- ✅ `HybridSearchEngine` - 混合搜索引擎核心
+- ✅ `FTSEngine` - 全文搜索引擎 (SQLite FTS5)
+- ✅ 10 个混合搜索工具
+  - `hybrid_search` - 混合搜索 (向量 + 关键词)
+  - `hybrid_vector_search` - 仅向量搜索
+  - `hybrid_keyword_search` - 仅关键词搜索
+  - `hybrid_index` - 索引文档
+  - `hybrid_index_batch` - 批量索引
+  - `hybrid_delete` - 删除文档
+  - `hybrid_status` - 获取引擎状态
+  - `hybrid_stats` - 搜索统计
+  - `hybrid_history` - 搜索历史
+  - `hybrid_clear` - 清空索引
+- ✅ 智能权重调整 (基于查询特征)
+- ✅ 结果合并 (向量和关键词)
+- ✅ 多样性重排序
+- ✅ V27 Embedding 集成
+
+**代码统计:**
+- v30-agent/hybrid/: 5 个模块, ~4500 行
+- 工具总数: 177 个 (V29 的 167 + V30 的 10)
+
+**特性:**
+- 向量搜索 (V27 Embedding 集成)
+- 关键词搜索 (SQLite FTS5)
+- 智能权重调整 (技术术语 vs 自然语言)
+- 结果多样性优化
+- 批量索引支持
+- 搜索历史追踪
+
+**灵感来源:** OpenClaw memory/hybrid.ts
+
+**使用场景:**
+- 代码搜索
+- 文档检索
+- 知识库查询
+- 语义搜索 + 精确匹配
+
+详见: [docs/v30-混合搜索.md](./docs/v30-混合搜索.md)
 
 ---
 
@@ -421,9 +651,9 @@
 
 ---
 
-## 计划中 (V30+)
+## 计划中 (V34+)
 
-### V30: 向量数据库集成 (计划中)
+### V34: 向量数据库集成 (计划中)
 
 - 支持 Pinecone
 - 支持 Weaviate
@@ -431,7 +661,7 @@
 - 支持 Milvus
 - 统一的 VectorDB 接口
 
-### V31: 实时语音识别 (计划中)
+### V35: 实时语音识别 (计划中)
 
 - 流式语音输入
 - 实时转录
@@ -440,8 +670,10 @@
 
 ### 备选方向
 
-- **混合搜索** - 向量 + 关键词结合 (从 OpenClaw memory/hybrid.ts 借鉴)
-- **SQLite 向量存储** - 简化向量存储，无外部依赖
+- **SQLite 向量存储** - 简化向量存储，无外部依赖 (参考 OpenClaw sqlite-vec.ts)
+- **批量嵌入处理** - 参考 OpenClaw batch-gemini.ts / batch-openai.ts
+- **增强记忆管理** - 参考 OpenClaw qmd-manager.ts
+- **Skill 安全扫描** - 参考 OpenClaw skill-scanner.ts
 - **Gmail/邮件集成** - 需要 OAuth 配置，复杂度较高
 
 ---
@@ -474,8 +706,10 @@
 | **v27-embedding.test.ts** | **25** | **V27** |
 | **v28-link.test.ts** | **20** | **V28** |
 | **v29-security.test.ts** | **32** | **V29** |
+| **v30-hybrid.test.ts** | **21** | **V30** |
+| **v31-poll.test.ts** | **34** | **V31** |
 | **benchmark-evolution.test.ts** | **111** | **V11-V20 跨版本** |
-| **合计** | **624** | |
+| **合计** | **679** | |
 
 ---
 
@@ -509,6 +743,12 @@
 - [x] V28 链接理解测试 (2026-02-14)
 - [x] **V29 安全审计系统 (2026-02-15)** ⭐
 - [x] V29 安全审计测试 (2026-02-15, 32 个测试)
+- [x] **V30 混合搜索系统 (2026-02-16)** ⭐
+- [x] V30 混合搜索测试 (2026-02-16, 21 个测试)
+- [x] **V31 投票系统 (2026-02-16)** ⭐
+- [x] V31 投票系统测试 (2026-02-16, 34 个测试)
+- [x] **V32 速率限制与重试策略 (2026-02-16)** ⭐
+- [ ] V32 速率限制测试 (待添加)
 - [ ] 统一错误处理
 - [ ] 文档国际化
 
@@ -518,6 +758,11 @@
 
 | 日期 | 版本 | 主要更新 |
 |------|------|----------|
+| 2026-02-17 | V34 | 去重缓存系统 (Dedupe/去重) |
+| 2026-02-17 | V33 | Skill 安全扫描系统 (Scanner) |
+| 2026-02-16 | V32 | 速率限制与重试策略 (Rate Limit/Retry) |
+| 2026-02-16 | V31 | 投票系统 (Poll/Voting) |
+| 2026-02-16 | V30 | 混合搜索系统 (Vector + FTS) |
 | 2026-02-15 | V29 | 安全审计系统 (Security/Audit) |
 | 2026-02-14 | V28 | 链接理解系统 (Link/Fetch) |
 | 2026-02-14 | V27 | 向量嵌入增强 (Embedding/语义搜索) |
@@ -535,4 +780,4 @@
 
 ---
 
-*Last updated: 2026-02-15 - V29 安全审计系统完成*
+*Last updated: 2026-02-17 - V34 去重缓存系统完成*
