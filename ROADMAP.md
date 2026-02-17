@@ -64,6 +64,94 @@
 | **v33-agent** | **scanner/ 安全扫描** | **208** | **V32 + ... + V11** |
 | **v34-agent** | **dedupe/ 去重缓存** | **219** | **V33 + ... + V11** |
 | **v35-agent** | **usage/ 成本追踪** | **235** | **V34 + ... + V11** |
+| **v36-agent** | **diagnostic/ 诊断事件** | **250** | **V35 + ... + V11** |
+| **v37-agent** | **sys/ 系统工具** | **259** | **V36 + ... + V11** |
+
+---
+
+## 已完成 (V37)
+
+### V37: 系统工具集 ✅
+
+**目标**: 让 Agent 能够访问系统级信息和剪贴板操作
+
+**已实现:**
+- ✅ 9 个系统工具
+  - `sys_clipboard_copy` - 复制文本到系统剪贴板
+  - `sys_clipboard_paste` - 从系统剪贴板读取文本
+  - `sys_os_info` - 获取操作系统信息 (平台、架构、版本、内存等)
+  - `sys_hostname` - 获取主机名
+  - `sys_network_info` - 获取网络信息 (IP 地址)
+  - `sys_uptime` - 获取系统运行时间
+  - `sys_presence_get` - 获取当前节点存在信息
+  - `sys_presence_list` - 列出所有已知节点的存在信息
+  - `sys_presence_update` - 更新节点存在信息
+- ✅ 跨平台剪贴板支持 (macOS/Linux/Windows)
+- ✅ OS 信息摘要 (内存格式化、运行时间格式化)
+- ✅ 节点 Presence 系统 (追踪节点状态)
+
+**代码统计:**
+- v37-agent/sys/: 6 个模块, ~1500 行
+- 工具总数: 259 个 (V36 的 250 + V37 的 9)
+
+**灵感来源:** OpenClaw infra/clipboard.ts, infra/device-identity.ts
+
+**使用场景:**
+- 系统信息查询
+- 剪贴板操作
+- 节点状态追踪
+- 网络诊断
+
+---
+
+## 已完成 (V36)
+
+### V36: 诊断事件系统 ✅
+
+**目标**: 让 Agent 能够追踪内部状态、性能指标和错误
+
+**已实现:**
+- ✅ `DiagnosticEngine` - 诊断事件引擎核心
+- ✅ 15 个诊断工具
+  - `diagnostic_emit_usage` - 发射模型使用事件
+  - `diagnostic_emit_tool_call` - 发射工具调用事件
+  - `diagnostic_emit_error` - 发射错误事件
+  - `diagnostic_emit_session_state` - 发射会话状态变更事件
+  - `diagnostic_emit_message` - 发射消息处理事件
+  - `diagnostic_query` - 查询诊断事件
+  - `diagnostic_get_events` - 获取最近的诊断事件
+  - `diagnostic_stats` - 获取事件类型统计
+  - `diagnostic_errors` - 获取最近的错误事件
+  - `diagnostic_status` - 获取诊断系统状态
+  - `diagnostic_config` - 获取/更新配置
+  - `diagnostic_report` - 生成诊断报告
+  - `diagnostic_clear` - 清除所有诊断事件
+  - `diagnostic_subscribe` - 订阅诊断事件
+- ✅ 14 种事件类型
+  - model.usage - 模型使用追踪
+  - tool.call - 工具调用追踪
+  - error - 错误追踪
+  - session.state - 会话状态变更
+  - message.processed - 消息处理
+  - webhook.* - Webhook 事件
+  - queue.* - 队列事件
+- ✅ 事件发射与监听
+- ✅ 事件存储与查询
+- ✅ 统计与分析 (计数、平均持续时间、错误数)
+- ✅ 报告生成 (text/json/markdown)
+
+**代码统计:**
+- v36-agent/diagnostic/: 4 个模块, ~3000 行
+- 工具总数: 250 个 (V35 的 235 + V36 的 15)
+- 测试: 35+ 个
+
+**灵感来源:** OpenClaw infra/diagnostic-events.ts
+
+**使用场景:**
+- 系统可观测性
+- 性能监控
+- 错误追踪
+- 调试和诊断
 
 ---
 
@@ -764,7 +852,9 @@
 | **v31-poll.test.ts** | **34** | **V31** |
 | **v35-usage.test.ts** | **40** | **V35** |
 | **benchmark-evolution.test.ts** | **111** | **V11-V20 跨版本** |
-| **合计** | **719** | |
+| **v36-diagnostic.test.ts** | **35** | **V36** |
+| **v37-sys.test.ts** | **22** | **V37** |
+| **合计** | **776** | |
 
 ---
 
@@ -806,6 +896,10 @@
 - [x] V32 速率限制测试 (待添加)
 - [x] **V35 Usage/成本追踪系统 (2026-02-17)** ⭐
 - [x] V35 Usage 测试 (2026-02-17, 40 个测试)
+- [x] **V36 诊断事件系统 (2026-02-17)** ⭐
+- [x] V36 诊断事件测试 (2026-02-17, 35+ 个测试)
+- [x] **V37 系统工具集 (2026-02-18)** ⭐
+- [x] V37 系统工具测试 (2026-02-18, 22 个测试)
 - [ ] 统一错误处理
 - [ ] 文档国际化
 
@@ -815,6 +909,8 @@
 
 | 日期 | 版本 | 主要更新 |
 |------|------|----------|
+| 2026-02-18 | V37 | 系统工具集 (System/剪贴板/OS信息/Presence) |
+| 2026-02-17 | V36 | 诊断事件系统 (Diagnostic/可观测性) |
 | 2026-02-17 | V35 | Usage/成本追踪系统 (Usage/成本追踪) |
 | 2026-02-17 | V34 | 去重缓存系统 (Dedupe/去重) |
 | 2026-02-17 | V33 | Skill 安全扫描系统 (Scanner) |
@@ -838,4 +934,4 @@
 
 ---
 
-*Last updated: 2026-02-17 - V35 Usage/成本追踪系统完成*
+*Last updated: 2026-02-18 - V37 系统工具集完成*

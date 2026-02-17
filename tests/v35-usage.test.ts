@@ -182,13 +182,26 @@ describe("V35: Usage/成本追踪系统", () => {
         expect(totals.totalTokens).toBe(525);
       });
 
-      it("应该按时间范围过滤", () => {
-        const now = Date.now();
+      it("应该按时间范围过滤", async () => {
+        // 记录第一条
         engine.record({ usage: { input: 100, output: 50 } });
 
-        // 等待一下再记录
+        // 等待确保时间戳不同
+        await new Promise(r => setTimeout(r, 5));
+
+        // 记录时间范围开始
         const start = Date.now();
+
+        // 等待确保时间戳不同
+        await new Promise(r => setTimeout(r, 5));
+
+        // 在时间范围内记录第二条
         engine.record({ usage: { input: 200, output: 100 } });
+
+        // 等待确保时间戳不同
+        await new Promise(r => setTimeout(r, 5));
+
+        // 记录时间范围结束
         const end = Date.now();
 
         const totals = engine.getTotals(start, end);
