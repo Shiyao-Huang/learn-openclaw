@@ -63,6 +63,60 @@
 | **v32-agent** | **ratelimit/ 速率限制** | **202** | **V31 + ... + V11** |
 | **v33-agent** | **scanner/ 安全扫描** | **208** | **V32 + ... + V11** |
 | **v34-agent** | **dedupe/ 去重缓存** | **219** | **V33 + ... + V11** |
+| **v35-agent** | **usage/ 成本追踪** | **235** | **V34 + ... + V11** |
+
+---
+
+## 已完成 (V35)
+
+### V35: Usage/成本追踪系统 ✅
+
+**目标**: 让 Agent 能够追踪 API 使用和成本
+
+**已实现:**
+- ✅ `UsageEngine` - 使用追踪引擎核心
+- ✅ 16 个使用追踪工具
+  - `usage_record` - 记录 API 使用
+  - `usage_get_totals` - 获取使用总计
+  - `usage_get_summary` - 获取使用摘要
+  - `usage_get_daily` - 获取每日统计
+  - `usage_get_tools` - 获取工具使用统计
+  - `usage_get_models` - 获取模型使用统计
+  - `usage_get_session` - 获取会话使用摘要
+  - `usage_get_latency` - 获取延迟统计
+  - `usage_get_daily_latency` - 获取每日延迟统计
+  - `usage_report` - 生成使用报告
+  - `usage_status` - 获取系统状态
+  - `usage_config` - 获取/更新配置
+  - `usage_model_costs` - 管理模型成本配置
+  - `usage_normalize` - 标准化使用数据
+  - `usage_clear` - 清除所有记录
+- ✅ 使用数据标准化 (支持多种格式)
+- ✅ 成本计算 (支持多模型定价)
+- ✅ 每日统计
+- ✅ 工具和模型使用统计
+- ✅ 延迟统计 (avg/p50/p95/p99)
+- ✅ 会话摘要
+- ✅ 报告生成 (text/json/markdown/csv)
+
+**代码统计:**
+- v35-agent/usage/: 4 个模块, ~3500 行
+- 工具总数: 235 个 (V34 的 219 + V35 的 16)
+
+**支持的模型成本:**
+- OpenAI (GPT-4o, GPT-4o-mini, GPT-4-turbo, GPT-3.5)
+- Anthropic (Claude 3.5 Sonnet, Opus, Haiku)
+- Google (Gemini 1.5 Pro, Flash)
+- Zhipu (GLM-4, GLM-4-flash)
+- 自定义模型支持
+
+**灵感来源:** OpenClaw infra/provider-usage.ts
+
+**使用场景:**
+- API 成本追踪
+- 使用统计分析
+- 性能监控
+- 预算管理
 
 ---
 
@@ -708,8 +762,9 @@
 | **v29-security.test.ts** | **32** | **V29** |
 | **v30-hybrid.test.ts** | **21** | **V30** |
 | **v31-poll.test.ts** | **34** | **V31** |
+| **v35-usage.test.ts** | **40** | **V35** |
 | **benchmark-evolution.test.ts** | **111** | **V11-V20 跨版本** |
-| **合计** | **679** | |
+| **合计** | **719** | |
 
 ---
 
@@ -748,7 +803,9 @@
 - [x] **V31 投票系统 (2026-02-16)** ⭐
 - [x] V31 投票系统测试 (2026-02-16, 34 个测试)
 - [x] **V32 速率限制与重试策略 (2026-02-16)** ⭐
-- [ ] V32 速率限制测试 (待添加)
+- [x] V32 速率限制测试 (待添加)
+- [x] **V35 Usage/成本追踪系统 (2026-02-17)** ⭐
+- [x] V35 Usage 测试 (2026-02-17, 40 个测试)
 - [ ] 统一错误处理
 - [ ] 文档国际化
 
@@ -758,6 +815,7 @@
 
 | 日期 | 版本 | 主要更新 |
 |------|------|----------|
+| 2026-02-17 | V35 | Usage/成本追踪系统 (Usage/成本追踪) |
 | 2026-02-17 | V34 | 去重缓存系统 (Dedupe/去重) |
 | 2026-02-17 | V33 | Skill 安全扫描系统 (Scanner) |
 | 2026-02-16 | V32 | 速率限制与重试策略 (Rate Limit/Retry) |
@@ -780,4 +838,4 @@
 
 ---
 
-*Last updated: 2026-02-17 - V34 去重缓存系统完成*
+*Last updated: 2026-02-17 - V35 Usage/成本追踪系统完成*
