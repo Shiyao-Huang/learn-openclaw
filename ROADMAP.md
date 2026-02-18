@@ -66,6 +66,52 @@
 | **v35-agent** | **usage/ 成本追踪** | **235** | **V34 + ... + V11** |
 | **v36-agent** | **diagnostic/ 诊断事件** | **250** | **V35 + ... + V11** |
 | **v37-agent** | **sys/ 系统工具** | **259** | **V36 + ... + V11** |
+| **v38-agent** | **approval/ 命令审批** | **276** | **V37 + ... + V11** |
+
+---
+
+## 已完成 (V38)
+
+### V38: 命令执行审批系统 ✅
+
+**目标**: 让 Agent 能够安全地管理和审批命令执行
+
+**已实现:**
+- ✅ `ApprovalEngine` - 命令执行审批引擎核心
+- ✅ 17 个审批工具
+  - `approval_allowlist_add` - 添加命令到白名单
+  - `approval_allowlist_remove` - 从白名单移除命令
+  - `approval_allowlist_list` - 列出白名单
+  - `approval_allowlist_get` - 获取白名单条目详情
+  - `approval_allowlist_update` - 更新白名单条目
+  - `approval_safebins_list` - 列出安全二进制
+  - `approval_safebins_add` - 添加安全二进制
+  - `approval_safebins_remove` - 移除安全二进制
+  - `approval_policy_get` - 获取审批策略
+  - `approval_policy_set` - 设置审批策略
+  - `approval_analyze` - 分析命令
+  - `approval_check` - 检查命令审批状态
+  - `approval_stats` - 获取统计信息
+  - `approval_config_export` - 导出配置
+  - `approval_config_import` - 导入配置
+  - `approval_reset` - 重置配置
+- ✅ 命令解析 (支持 &&, ||, ;, |)
+- ✅ 白名单模式匹配 (支持通配符)
+- ✅ 安全二进制管理
+- ✅ 多级安全策略 (deny/allowlist/full)
+- ✅ 交互式审批 (on-miss/always)
+
+**代码统计:**
+- v38-agent/approval/: 3 个模块, ~4000 行
+- 工具总数: 276 个 (V37 的 259 + V38 的 17)
+
+**灵感来源:** OpenClaw infra/exec-approvals.ts
+
+**使用场景:**
+- 命令执行安全
+- 权限管理
+- 审计追踪
+- 自动化安全策略
 
 ---
 
